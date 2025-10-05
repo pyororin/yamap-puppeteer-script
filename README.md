@@ -1,0 +1,2 @@
+# yamap-puppeteer-script
+PuppeteerでYAMAPにログインし、タイムライン上の投稿に自動でリアクションを送るスクリプト。詳細なデバッグログとHTML出力機能を備えています。
