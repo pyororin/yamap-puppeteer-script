@@ -1,17 +1,26 @@
-# Ignore compiled binaries
-send_reaction
+# Binaries for programs and plugins
 *.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
 *.out
 
-# Ignore user data directories created by chromedp
-user-data/
+# Environment variables
+.env
+.env.*
+!.env.example
 
-# Ignore log files
+# Log files
 *.log
 
-# Ignore environment files
-.env
+# Build files
+/build
 
-# Temporary files
-urls.txt
-cookies.json
+# Compiled binary
+yamap_reaction_sender
