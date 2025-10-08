@@ -79,23 +79,10 @@ func main() {
 	}
 	log.Println("ログインに成功しました。")
 
-	// --- URLリストの取得 ---
-	log.Println("活動日記のURLリストを取得します...")
-	urls, err := fetchActivityURLs(ctx, postCount)
-	if err != nil {
-		log.Fatalf("URLリストの取得に失敗しました: %v", err)
-	}
-	if len(urls) == 0 {
-		log.Fatal("対象のURLが見つかりませんでした。")
-	}
-	log.Printf("%d件のURLを取得しました。", len(urls))
-
-	// --- 各URLにリアクションを送信 ---
-	for _, url := range urls {
-		if err := sendReaction(ctx, url); err != nil {
-			log.Printf("リアクション送信中にエラーが発生しました: %v", err)
-			// 次のURLへ処理を続ける
-		}
+	// --- タイムライン処理 ---
+	log.Println("タイムラインの処理を開始します...")
+	if err := processTimeline(ctx, postCount); err != nil {
+		log.Fatalf("タイムライン処理中に致命的なエラーが発生しました: %v", err)
 	}
 
 	log.Println("すべての処理が完了しました。")
@@ -130,59 +117,157 @@ func login(ctx context.Context, email, password string) error {
 	defer cancelWait()
 
 	if err := chromedp.Run(waitCtx,
-		logAction(`ログイン後のページ遷移を待っています...`),
-		chromedp.WaitVisible(`h2.css-xp2hg4`, chromedp.ByQuery),
+		logAction(`タイムラインの読み込みを待っています...`),
+		chromedp.WaitVisible(`a[href^="/activities/"]`, chromedp.ByQuery),
 	); err != nil {
-		return fmt.Errorf("ログイン後のページ遷移確認に失敗: %w", err)
+		return fmt.Errorf("ログイン後のタイムライン読み込み確認に失敗: %w", err)
 	}
 
 	log.Println("ログイン成功を確認しました。")
 	return nil
 }
 
-func fetchActivityURLs(ctx context.Context, count int) ([]string, error) {
-	var urls []string
-	var res string
-	err := chromedp.Run(ctx,
-		chromedp.WaitVisible(`a[href^="/activities/"]`),
-		chromedp.Evaluate(`
-			(() => {
-				const links = Array.from(document.querySelectorAll('a[href^="/activities/"]'));
-				const hrefs = links.map(link => link.href);
-				// 重複を除外して返す
-				return JSON.stringify(Array.from(new Set(hrefs)));
-			})()
-		`, &res),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("URL取得のJavaScript実行に失敗: %w", err)
-	}
+func processTimeline(ctx context.Context, postCountToProcess int) error {
+	log.Println("タイムラインのURL収集とリアクション送信を開始します。")
 
-	var allUrls []string
-	if err := json.Unmarshal([]byte(res), &allUrls); err != nil {
-		return nil, fmt.Errorf("URLのJSONパースに失敗: %w", err)
-	}
+	seenUrls := make(map[string]struct{})
+	var successfulReactions int
+	var lastHeight int64
+	noNewUrlsCount := 0
 
-	// landmarksを含まないURLをcountの数だけ収集
-	for _, url := range allUrls {
-		if len(urls) >= count {
+	// 15分間の全体的なタイムアウト
+	procCtx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+	defer cancel()
+
+	for successfulReactions < postCountToProcess {
+		select {
+		case <-procCtx.Done():
+			log.Println("処理中にタイムアウトしました。")
+			// タイムアウトはエラーではなく、現在の状態で終了
+			log.Printf("いいね！の送信が完了しました。最終的な成功件数: %d", successfulReactions)
+			return nil
+		default:
+		}
+
+		// 現在のURLをすべて取得
+		var res string
+		err := chromedp.Run(procCtx,
+			chromedp.Evaluate(`
+                (() => {
+                    const links = Array.from(document.querySelectorAll('a[href^="/activities/"]'));
+                    const hrefs = links.map(link => link.href);
+                    return JSON.stringify(Array.from(new Set(hrefs)));
+                })()
+            `, &res),
+		)
+		if err != nil {
+			log.Printf("URL取得のJavaScript実行に失敗: %v", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		var currentUrls []string
+		if err := json.Unmarshal([]byte(res), &currentUrls); err != nil {
+			log.Printf("URLのJSONパースに失敗: %v", err)
+			continue
+		}
+
+		newUrlsFound := false
+		for _, url := range currentUrls {
+			if _, seen := seenUrls[url]; !seen {
+				seenUrls[url] = struct{}{}
+				newUrlsFound = true
+
+				if !strings.Contains(url, "landmarks") && !strings.HasSuffix(url, "/new") {
+					log.Printf("新しい投稿を処理します: %s", url)
+					// ページ遷移を伴うため、全体のコンテキストとは別のコンテキストで実行
+					reactionCtx, reactionCancel := context.WithTimeout(procCtx, 1*time.Minute)
+					liked, err := sendReaction(reactionCtx, url)
+					reactionCancel()
+
+					if err != nil {
+						log.Printf("リアクション処理中にエラーが発生しました (%s): %v", url, err)
+						// エラーが発生した投稿はスキップして次に進む
+						continue
+					}
+					if liked {
+						successfulReactions++
+						log.Printf("いいね！しました。(現在 %d/%d 件)", successfulReactions, postCountToProcess)
+						if successfulReactions >= postCountToProcess {
+							break // 目標数に達したら内部ループを抜ける
+						}
+					}
+				}
+			}
+		}
+
+		if successfulReactions >= postCountToProcess {
+			log.Printf("目標の %d 件の「いいね！」を達成しました。", postCountToProcess)
+			break // メインループを抜ける
+		}
+
+		// スクロール処理
+		var currentHeight int64
+		if err := chromedp.Run(procCtx, chromedp.Evaluate(`document.body.scrollHeight`, &currentHeight)); err != nil {
+			log.Printf("ページの高さの取得に失敗: %v", err)
 			break
 		}
-		if !strings.Contains(url, "landmarks") {
-			urls = append(urls, url)
+
+		if !newUrlsFound && currentHeight == lastHeight {
+			noNewUrlsCount++
+			log.Printf("新しいURLが見つかりませんでした。(試行 %d/3)", noNewUrlsCount)
+			if noNewUrlsCount >= 3 {
+				log.Println("タイムラインの終端に到達したか、新しい投稿が読み込まれませんでした。処理を終了します。")
+				break
+			}
+		} else {
+			noNewUrlsCount = 0 // 新しいURLが見つかればリセット
 		}
+		lastHeight = currentHeight
+
+		log.Println("ページを下にスクロールします...")
+		if err := chromedp.Run(procCtx, chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight)`, nil)); err != nil {
+			log.Printf("ページスクロールに失敗: %v", err)
+			break
+		}
+		time.Sleep(5 * time.Second) // 新しいコンテンツが読み込まれるのを待つ
 	}
 
-	return urls, nil
+	log.Printf("いいね！の送信が完了しました。最終的な成功件数: %d", successfulReactions)
+	return nil
 }
 
-func sendReaction(ctx context.Context, url string) error {
+func sendReaction(ctx context.Context, url string) (bool, error) {
+	log.Printf("投稿ページを確認中: %s", url)
+
+	// 1. ページに移動
+	if err := chromedp.Run(ctx,
+		chromedp.Navigate(url),
+		chromedp.WaitReady("body"), // bodyが読み込まれるのを待つ
+	); err != nil {
+		return false, fmt.Errorf("ページへの移動に失敗 (%s): %w", url, err)
+	}
+
+	// 2. すでにリアクション済みか確認
+	var isReacted bool
+	// "あなたのリアクション" というaria-labelを持つボタンが存在するかどうかで判定
+	if err := chromedp.Run(ctx,
+		chromedp.Evaluate(`document.querySelector("button[aria-label^='あなたのリアクション']") !== null`, &isReacted),
+	); err != nil {
+		log.Printf("リアクション済みかの確認に失敗: %v。リアクションを試みます。", err)
+	}
+
+	if isReacted {
+		log.Printf("この投稿はすでにリアクション済みです: %s", url)
+		return false, nil // リアクションせず、正常終了
+	}
+
 	log.Printf("リアクションを送信します: %s", url)
-	var err error
+	// 3. リアクションを送信（リトライロジック）
+	var sendErr error
 	for i := 0; i < 3; i++ {
 		log.Printf("Attempt %d for %s", i+1, url)
-		err = chromedp.Run(ctx,
-			chromedp.Navigate(url),
+		sendErr = chromedp.Run(ctx,
 			chromedp.WaitVisible(`button[aria-label="絵文字をおくる"]`),
 			logAction("「絵文字をおくる」ボタンをクリックします..."),
 			chromedp.Click(`button[aria-label="絵文字をおくる"]`, chromedp.ByQuery),
@@ -193,14 +278,14 @@ func sendReaction(ctx context.Context, url string) error {
 			logAction("リアクション送信後、3秒待機します..."),
 			chromedp.Sleep(3*time.Second),
 		)
-		if err == nil {
+		if sendErr == nil {
 			log.Printf("リアクションの送信に成功しました: %s", url)
-			return nil
+			return true, nil // リアクション成功
 		}
-		log.Printf("Attempt %d failed for %s: %v", i+1, url, err)
+		log.Printf("Attempt %d failed for %s: %v", i+1, url, sendErr)
 		time.Sleep(2 * time.Second) // Wait before retrying
 	}
-	return fmt.Errorf("リアクションの送信に失敗しました（3回試行）: %s, error: %w", url, err)
+	return false, fmt.Errorf("リアクションの送信に失敗しました（3回試行）: %s, error: %w", url, sendErr)
 }
 
 func logAction(message string) chromedp.Action {
