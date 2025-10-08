@@ -19,17 +19,17 @@
 
 ## 実行方法
 
-1.  **環境変数の設定**:
-    ターミナルで以下の環境変数を設定します。`.env` ファイルを使用することもできますが、直接設定する場合は以下のようにします。
+1.  **`.env`ファイルの作成**:
+    リポジトリのルートに`.env`という名前のファイルを作成し、以下の内容を記述します。`your_email@example.com` 等の部分は、ご自身の情報に置き換えてください。
 
-    ```bash
-    export YAMAP_EMAIL="your_email@example.com"
-    export YAMAP_PASSWORD="your_password"
-    export POST_COUNT_TO_PROCESS="10"
+    ```
+    YAMAP_EMAIL="your_email@example.com"
+    YAMAP_PASSWORD="your_password"
+    POST_COUNT_TO_PROCESS="10"
     ```
 
 2.  **スクリプトの実行**:
-    リポジトリのルートディレクトリで以下のコマンドを実行し、自動化プロセスを開始します。
+    必要な依存関係はGoモジュールによって自動的に管理されます。以下のコマンドを実行するだけで、スクリプトが起動します。
 
     ```bash
     go run main.go

@@ -13,6 +13,7 @@ import (
 
 	cu "github.com/Davincible/chromedp-undetected"
 	"github.com/chromedp/chromedp"
+	"github.com/joho/godotenv"
 )
 
 // --- 定数定義 ---
@@ -73,6 +74,11 @@ type NuxtTimelineData struct {
 }
 
 func main() {
+	// --- .envファイルの読み込み ---
+	if err := godotenv.Load(); err != nil {
+		log.Println("警告: .envファイルが見つからないか、読み込めませんでした。環境変数が直接設定されていることを期待します。")
+	}
+
 	// --- Chromedpの初期化 ---
 	log.Println("undetected-chromedpを使用してヘッドレスブラウザを初期化しています...")
 	ctx, cancel, err := cu.New(cu.NewConfig(
