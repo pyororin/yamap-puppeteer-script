@@ -1,0 +1,17 @@
+# Ignore compiled binaries
+send_reaction
+*.exe
+*.out
+
+# Ignore user data directories created by chromedp
+user-data/
+
+# Ignore log files
+*.log
+
+# Ignore environment files
+.env
+
+# Temporary files
+urls.txt
+cookies.json
