@@ -6,13 +6,12 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
-	cu "github.com/Davincible/chromedp-undetected"
 	"github.com/chromedp/chromedp"
+	"github.com/joho/godotenv"
 )
 
 // ActivityInfo holds the essential details for processing a post.
@@ -21,37 +20,93 @@ type ActivityInfo struct {
 	Reacted bool
 }
 
-// NuxtTimelineData is the structure for the relevant parts of the window.__NUXT__ object on the timeline page.
-// It is designed to extract a list of activities and their reaction status.
-type NuxtTimelineData struct {
-	State struct {
-		Feed struct { // Assuming 'feed' is the key for the timeline data
-			Items []struct {
-				Activity struct {
-					ID             int64 `json:"id"`
-					EmojiReactions []struct {
-						ViewerHasReacted bool `json:"viewer_has_reacted"`
-					} `json:"emoji_reactions"`
-				} `json:"activity"`
-			} `json:"items"`
-		} `json:"feed"`
-	} `json:"state"`
+// Activity represents the activity data within a feed item.
+type Activity struct {
+	ID             int64 `json:"id"`
+	EmojiReactions []struct {
+		ViewerHasReacted bool `json:"viewer_has_reacted"`
+	} `json:"emoji_reactions"`
 }
 
-func main() {
-	// --- Chromedpの初期化 ---
-	log.Println("undetected-chromedpを使用してヘッドレスブラウザを初期化しています...")
-	ctx, cancel, err := cu.New(cu.NewConfig(
-		cu.WithHeadless(),
-		cu.WithTimeout(15*time.Minute), // タイムライン処理全体を考慮してタイムアウトを延長
-		cu.WithChromeFlags(chromedp.ExecPath("/home/jules/.cache/ms-playwright/chromium-1181/chrome-linux/chrome")),
-	))
+// Journal represents a journal entry within a feed item.
+// It's kept minimal as we only need it for parsing.
+type Journal struct {
+	ID   int64  `json:"id"`
+	Text string `json:"text"`
+}
+
+// FeedItem represents a single item in the timeline feed.
+// It includes fields for both activities and journals to ensure proper JSON parsing.
+type FeedItem struct {
+	ID           int64     `json:"id"`
+	FeedableType string    `json:"feedable_type"`
+	Activity     *Activity `json:"activity"`
+	Journal      *Journal  `json:"journal"`
+}
+
+// parseNuxtData extracts and parses the timeline feed data from the page's javascript context.
+func parseNuxtData(ctx context.Context) ([]FeedItem, error) {
+	var res json.RawMessage
+	// タイムラインのフィードは window.__NUXT__.state.timeline.feeds に格納されている
+	// オブジェクトを直接返し、chromedpにJSONへのシリアライズを任せる
+	script := `
+		(function() {
+			if (window.__NUXT__ && window.__NUXT__.state && window.__NUXT__.state.timeline && window.__NUXT__.state.timeline.feeds) {
+				return window.__NUXT__.state.timeline.feeds;
+			}
+			return null;
+		})();
+	`
+	err := chromedp.Run(ctx,
+		chromedp.Evaluate(script, &res),
+	)
 	if err != nil {
-		log.Fatalf("undetected-chromedpの初期化に失敗しました: %v", err)
+		return nil, fmt.Errorf("failed to evaluate javascript to get feed items: %w", err)
 	}
+
+	if len(res) == 0 || string(res) == "null" {
+		return []FeedItem{}, nil
+	}
+
+	var items []FeedItem
+	if err := json.Unmarshal(res, &items); err != nil {
+		os.WriteFile("failed_unmarshal_feeds.json", res, 0644)
+		return nil, fmt.Errorf("failed to unmarshal feed items from javascript object: %w. JSON saved to failed_unmarshal_feeds.json", err)
+	}
+
+	return items, nil
+}
+
+
+func main() {
+	if err := godotenv.Load(); err != nil {
+		log.Println("警告: .envファイルが見つからないか、読み込みに失敗しました。")
+	}
+
+	log.Println("--- プログラム開始 ---")
+	startTime := time.Now()
+
+	log.Println("標準のchromedpを使用してヘッドレスブラウザを初期化しています...")
+	// ログインやページ読み込みに時間がかかる場合を考慮し、アロケータのタイムアウトを5分に延長
+	allocatorCtx, cancelAllocator := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancelAllocator()
+
+	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Headless,
+		chromedp.NoSandbox,
+		chromedp.DisableGPU,
+	)
+	allocCtx, cancelAlloc := chromedp.NewExecAllocator(allocatorCtx, allocOpts...)
+	defer cancelAlloc()
+
+	ctx, cancel := chromedp.NewContext(allocCtx, chromedp.WithLogf(log.Printf))
 	defer cancel()
 
-	// --- 環境変数の読み込み ---
+	ctx, cancel = context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+	log.Println("ブラウザの初期化完了。")
+
+	log.Println("環境変数を読み込んでいます...")
 	email := os.Getenv("YAMAP_EMAIL")
 	password := os.Getenv("YAMAP_PASSWORD")
 	postCountStr := os.Getenv("POST_COUNT_TO_PROCESS")
@@ -62,25 +117,27 @@ func main() {
 	if err != nil {
 		log.Fatalf("POST_COUNT_TO_PROCESSの値が不正です: %v", err)
 	}
+	log.Println("環境変数の読み込み完了。")
 
-	// --- ログイン処理 ---
 	log.Println("ログイン処理を開始します...")
+	loginStartTime := time.Now()
 	if err := login(ctx, email, password); err != nil {
 		log.Fatalf("ログインに失敗しました: %v", err)
 	}
-	log.Println("ログインに成功しました。")
+	log.Printf("ログイン成功。処理時間: %s", time.Since(loginStartTime))
 
-	// --- タイムライン処理 ---
 	log.Println("タイムラインの処理を開始します...")
+	timelineStartTime := time.Now()
 	if err := processTimeline(ctx, postCount); err != nil {
 		log.Fatalf("タイムライン処理中に致命的なエラーが発生しました: %v", err)
 	}
+	log.Printf("タイムライン処理完了。処理時間: %s", time.Since(timelineStartTime))
 
-	log.Println("すべての処理が完了しました。")
+	log.Printf("--- 全ての処理が正常に完了しました ---")
+	log.Printf("総処理時間: %s", time.Since(startTime))
 }
 
 func login(ctx context.Context, email, password string) error {
-	// 1. ページに移動し、フォームを入力
 	log.Println("ログインページに移動し、フォームを入力します...")
 	if err := chromedp.Run(ctx,
 		chromedp.Navigate("https://yamap.com/login"),
@@ -91,32 +148,29 @@ func login(ctx context.Context, email, password string) error {
 		return fmt.Errorf("フォーム入力に失敗: %w", err)
 	}
 
-	// 2. ログインボタンをクリック
-	log.Println("ログインボタンをクリックします...")
-	if err := chromedp.Run(ctx,
+	log.Println("ログインボタンをクリックし、明示的にタイムラインへ移動します...")
+	loginCtx, loginCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer loginCancel()
+
+	err := chromedp.Run(loginCtx,
+		// 1. ログインボタンをクリック
 		chromedp.Evaluate(`document.querySelector('button[type="submit"]').click()`, nil),
-	); err != nil {
-		return fmt.Errorf("ログインボタンのクリックに失敗: %w", err)
-	}
-
-	// 3. ログイン後のページ遷移を待つ
-	log.Println("ログイン後のタイムライン読み込みを待っています...")
-	time.Sleep(5 * time.Second)
-
-	waitCtx, cancelWait := context.WithTimeout(ctx, 30*time.Second)
-	defer cancelWait()
-
-	if err := chromedp.Run(waitCtx,
-		chromedp.WaitVisible(`a[href^="/activities/"]`, chromedp.ByQuery),
-	); err != nil {
-		// ログイン失敗時にスクリーンショットを撮る
+		// 2. サーバーからの応答とリダイレクトを待つために少し待機
+		chromedp.Sleep(5*time.Second),
+		// 3. セッションが確立された後、明示的にタイムラインページに移動
+		chromedp.Navigate("https://yamap.com/timeline"),
+		// 4. タイムラインフィードが表示されるまで待機
+		chromedp.WaitVisible(`.TimelineList__Feed`, chromedp.ByQuery),
+	)
+	if err != nil {
+		log.Println("ログイン後のタイムラインへの移動または表示確認に失敗しました。")
 		var buf []byte
-		if err := chromedp.Run(ctx, chromedp.FullScreenshot(&buf, 90)); err != nil {
-			log.Printf("スクリーンショットの取得に失敗: %v", err)
-		} else if err := os.WriteFile("login_failure_screenshot.png", buf, 0644); err != nil {
-			log.Printf("スクリーンショットの保存に失敗: %v", err)
+		if scrErr := chromedp.Run(ctx, chromedp.FullScreenshot(&buf, 90)); scrErr != nil {
+			log.Printf("スクリーンショットの取得に失敗: %v", scrErr)
+		} else if wErr := os.WriteFile("login_failure_screenshot.png", buf, 0644); wErr != nil {
+			log.Printf("スクリーンショットの保存に失敗: %v", wErr)
 		}
-		return fmt.Errorf("ログイン後のタイムライン読み込み確認に失敗: %w", err)
+		return fmt.Errorf("タイムラインへの移動または表示確認に失敗: %w", err)
 	}
 
 	log.Println("ログイン成功を確認しました。")
@@ -133,9 +187,10 @@ func processTimeline(ctx context.Context, postCountToProcess int) error {
 	timelineURL := "https://yamap.com/timeline"
 
 	for successfulReactions < postCountToProcess {
-		var activitiesToProcess []ActivityInfo // ループの先頭で宣言
-		var nuxtData NuxtTimelineData             // gotoエラーを避けるためここで宣言
-		var jsonData string                      // gotoエラーを避けるためここで宣言
+		var activitiesToProcess []ActivityInfo
+		var feedItems []FeedItem
+		var err error
+
 		select {
 		case <-ctx.Done():
 			log.Println("処理中にタイムアウトしました。")
@@ -143,47 +198,46 @@ func processTimeline(ctx context.Context, postCountToProcess int) error {
 		default:
 		}
 
-		// 毎回タイムラインページにいることを確認・復帰
 		var currentURL string
 		chromedp.Run(ctx, chromedp.Location(&currentURL))
 		if !strings.HasPrefix(currentURL, timelineURL) {
 			log.Printf("タイムラインページ (%s) にいません。移動します...", timelineURL)
-			if err := chromedp.Run(ctx, chromedp.Navigate(timelineURL), chromedp.WaitReady("body")); err != nil {
+			if err := chromedp.Run(ctx, chromedp.Navigate(timelineURL), chromedp.WaitVisible(`.TimelineList__Feed`, chromedp.ByQuery)); err != nil {
 				log.Printf("タイムラインへの復帰に失敗: %v", err)
-				return err // 致命的エラー
+				return err
 			}
 		}
 
-		// 1. タイムラインのHTMLから__NUXT__データを取得
-		var htmlContent string
-		if err := chromedp.Run(ctx, chromedp.OuterHTML("html", &htmlContent)); err != nil {
-			log.Printf("タイムラインのHTML取得に失敗: %v", err)
-			time.Sleep(3 * time.Second)
-			continue
-		}
-
-		re := regexp.MustCompile(`window\.__NUXT__\s*=\s*(.*?)\s*;\s*<\/script>`)
-		matches := re.FindStringSubmatch(htmlContent)
-		if len(matches) < 2 {
-			log.Println("タイムラインページからNUXTデータが見つかりませんでした。スクロールして再試行します。")
-			goto scroll
-		}
-		jsonData = matches[1]
-
-		if err := json.Unmarshal([]byte(jsonData), &nuxtData); err != nil {
-			log.Printf("NUXTデータのJSONパースに失敗: %v。スクロールして再試行します。", err)
+		log.Println("タイムラインのJavaScriptデータの読み込みを待機します...")
+		if err := chromedp.Run(ctx,
+			chromedp.WaitVisible(`.TimelineList__Feed`, chromedp.ByQuery),
+			chromedp.Poll(`window.__NUXT__ && window.__NUXT__.state && window.__NUXT__.state.timeline && window.__NUXT__.state.timeline.feeds`, nil, chromedp.WithPollingTimeout(20*time.Second)),
+		); err != nil {
+			log.Printf("タイムラインデータの準備待機中にタイムアウトまたはエラーが発生しました: %v。スクロールして再試行します。", err)
+			var htmlContent string
+			if dbgErr := chromedp.Run(ctx, chromedp.OuterHTML("html", &htmlContent)); dbgErr == nil {
+				os.WriteFile("timeline_page_on_wait_error.html", []byte(htmlContent), 0644)
+				log.Println("待機エラー発生時のHTMLを timeline_page_on_wait_error.html に保存しました。")
+			}
 			goto scroll
 		}
 
-		// 2. __NUXT__データから未リアクションのアクティビティを抽出
-		activitiesToProcess = nil // ループの各イテレーションでスライスをクリア
-		if len(nuxtData.State.Feed.Items) > 0 {
-			for _, item := range nuxtData.State.Feed.Items {
-				activity := item.Activity
+		feedItems, err = parseNuxtData(ctx)
+		if err != nil {
+			log.Printf("NUXTデータのパースに失敗: %v。スクロールして再試行します。", err)
+			goto scroll
+		}
+
+		if len(feedItems) > 0 {
+			for _, item := range feedItems {
+				// FeedにはActivity以外の項目(Journalなど)も含まれるため、Activityがnilでないことを確認
+				if item.Activity == nil {
+					continue
+				}
+				activity := *item.Activity // ポインタを実体に変換
 				if activity.ID == 0 {
 					continue
 				}
-
 				if _, seen := seenActivityIDs[activity.ID]; !seen {
 					seenActivityIDs[activity.ID] = struct{}{}
 					hasReacted := false
@@ -195,7 +249,6 @@ func processTimeline(ctx context.Context, postCountToProcess int) error {
 							}
 						}
 					}
-
 					if !hasReacted {
 						url := fmt.Sprintf("https://yamap.com/activities/%d", activity.ID)
 						activitiesToProcess = append(activitiesToProcess, ActivityInfo{URL: url})
@@ -213,7 +266,6 @@ func processTimeline(ctx context.Context, postCountToProcess int) error {
 			log.Printf("%d件の未リアクション投稿を処理します。", len(activitiesToProcess))
 		}
 
-		// 3. 未リアクションの投稿にリアクションを送信
 		for _, activity := range activitiesToProcess {
 			reactionCtx, reactionCancel := context.WithTimeout(ctx, 2*time.Minute)
 			liked, err := sendReaction(reactionCtx, activity.URL, timelineURL)
@@ -221,7 +273,6 @@ func processTimeline(ctx context.Context, postCountToProcess int) error {
 
 			if err != nil {
 				log.Printf("リアクション処理でエラーが発生しました (%s): %v", activity.URL, err)
-				// sendReactionがタイムラインへの復帰を試みるので、ここではループを続ける
 			}
 			if liked {
 				successfulReactions++
@@ -231,7 +282,6 @@ func processTimeline(ctx context.Context, postCountToProcess int) error {
 					goto end
 				}
 			}
-			// sendReactionから戻ってきたら、次の投稿処理に移る前に少し待つ
 			time.Sleep(1 * time.Second)
 		}
 
@@ -271,22 +321,19 @@ func sendReaction(ctx context.Context, url, timelineURL string) (bool, error) {
 	log.Printf("投稿ページに移動してリアクションを送信します: %s", url)
 	defer func() {
 		log.Printf("タイムライン (%s) に戻ります...", timelineURL)
-		// エラーが発生しても、タイムラインへの復帰を試みる
 		err := chromedp.Run(ctx,
 			chromedp.Navigate(timelineURL),
-			chromedp.WaitReady("body"),
+			chromedp.WaitVisible(`.TimelineList__Feed`, chromedp.ByQuery),
 		)
 		if err != nil {
 			log.Printf("タイムラインへの自動復帰に失敗しました: %v", err)
 		}
 	}()
 
-	// 投稿ページに移動
 	if err := chromedp.Run(ctx, chromedp.Navigate(url), chromedp.WaitVisible(`button[aria-label="絵文字をおくる"]`)); err != nil {
 		return false, fmt.Errorf("投稿ページへの移動またはボタンの待機に失敗: %w", err)
 	}
 
-	// リアクションボタンのクリックを3回試行
 	var sendErr error
 	for i := 0; i < 3; i++ {
 		log.Printf("リアクション試行 %d回目: %s", i+1, url)
@@ -294,7 +341,7 @@ func sendReaction(ctx context.Context, url, timelineURL string) (bool, error) {
 			chromedp.Click(`button[aria-label="絵文字をおくる"]`, chromedp.ByQuery),
 			chromedp.WaitVisible(`.emojiPickerBody`),
 			chromedp.Click(`button.emoji-picker-button[data-emoji-key='thumbs_up']`, chromedp.ByQuery),
-			chromedp.Sleep(3*time.Second), // リアクションが処理されるのを待つ
+			chromedp.Sleep(3*time.Second),
 		)
 
 		if sendErr == nil {
