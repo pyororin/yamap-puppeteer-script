@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -87,8 +88,8 @@ func main() {
 	startTime := time.Now()
 
 	log.Println("標準のchromedpを使用してヘッドレスブラウザを初期化しています...")
-	// ログインやページ読み込みに時間がかかる場合を考慮し、アロケータのタイムアウトを5分に延長
-	allocatorCtx, cancelAllocator := context.WithTimeout(context.Background(), 5*time.Minute)
+	// 多数の投稿を処理する際にブラウザセッションがタイムアウトしないよう、アロケータのタイムアウトを15分に延長
+	allocatorCtx, cancelAllocator := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancelAllocator()
 
 	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
@@ -135,6 +136,8 @@ func main() {
 
 	log.Printf("--- 全ての処理が正常に完了しました ---")
 	log.Printf("総処理時間: %s", time.Since(startTime))
+
+	printDependencies()
 }
 
 func login(ctx context.Context, email, password string) error {
@@ -267,9 +270,8 @@ func processTimeline(ctx context.Context, postCountToProcess int) error {
 		}
 
 		for _, activity := range activitiesToProcess {
-			reactionCtx, reactionCancel := context.WithTimeout(ctx, 2*time.Minute)
-			liked, err := sendReaction(reactionCtx, activity.URL, timelineURL)
-			reactionCancel()
+			// タイムアウト処理は sendReaction 内に移動
+			liked, err := sendReaction(ctx, activity.URL, timelineURL)
 
 			if err != nil {
 				log.Printf("リアクション処理でエラーが発生しました (%s): %v", activity.URL, err)
@@ -317,27 +319,40 @@ end:
 	return nil
 }
 
-func sendReaction(ctx context.Context, url, timelineURL string) (bool, error) {
+func sendReaction(parentCtx context.Context, url, timelineURL string) (bool, error) {
+	// この関数専用のタイムアウト付きコンテキストを作成（3分）
+	reactionCtx, cancel := context.WithTimeout(parentCtx, 3*time.Minute)
+	defer cancel()
+
 	log.Printf("投稿ページに移動してリアクションを送信します: %s", url)
+	// deferブロックでは、タイムアウトしない親コンテキストを使用して、タイムラインへの復帰を確実に行う
 	defer func() {
 		log.Printf("タイムライン (%s) に戻ります...", timelineURL)
-		err := chromedp.Run(ctx,
+		// reactionCtxがタイムアウトしても、parentCtxは有効なため、ナビゲーションが可能
+		// 復帰処理にはタイムアウトを設けない（メインのタイムアウトに依存）
+		err := chromedp.Run(parentCtx,
 			chromedp.Navigate(timelineURL),
 			chromedp.WaitVisible(`.TimelineList__Feed`, chromedp.ByQuery),
 		)
 		if err != nil {
-			log.Printf("タイムラインへの自動復帰に失敗しました: %v", err)
+			// 親コンテキスト自体がタイムアウトしているような、より大きな問題が発生した場合にログを出力
+			if parentCtx.Err() != nil {
+				log.Printf("親コンテキストが終了しているため、タイムラインへの復帰ができませんでした: %v", parentCtx.Err())
+			} else {
+				log.Printf("タイムラインへの自動復帰に失敗しました: %v", err)
+			}
 		}
 	}()
 
-	if err := chromedp.Run(ctx, chromedp.Navigate(url), chromedp.WaitVisible(`button[aria-label="絵文字をおくる"]`)); err != nil {
+	// リアクション関連の動作は、タイムアウトが設定されたreactionCtxを使用
+	if err := chromedp.Run(reactionCtx, chromedp.Navigate(url), chromedp.WaitVisible(`button[aria-label="絵文字をおくる"]`)); err != nil {
 		return false, fmt.Errorf("投稿ページへの移動またはボタンの待機に失敗: %w", err)
 	}
 
 	var sendErr error
 	for i := 0; i < 3; i++ {
 		log.Printf("リアクション試行 %d回目: %s", i+1, url)
-		sendErr = chromedp.Run(ctx,
+		sendErr = chromedp.Run(reactionCtx,
 			chromedp.Click(`button[aria-label="絵文字をおくる"]`, chromedp.ByQuery),
 			chromedp.WaitVisible(`.emojiPickerBody`),
 			chromedp.Click(`button.emoji-picker-button[data-emoji-key='thumbs_up']`, chromedp.ByQuery),
@@ -350,10 +365,17 @@ func sendReaction(ctx context.Context, url, timelineURL string) (bool, error) {
 		}
 		log.Printf("試行 %d回目が失敗しました (%s): %v", i+1, url, sendErr)
 
+		// タイムアウトなどのエラーが発生した場合、リトライせずにループを抜ける
+		if reactionCtx.Err() != nil {
+			log.Printf("コンテキストエラーのためリアクション処理を中断します: %v", reactionCtx.Err())
+			break
+		}
+
 		if i < 2 {
 			log.Println("ページをリロードして再試行します...")
-			if err := chromedp.Run(ctx, chromedp.Reload(), chromedp.WaitVisible(`button[aria-label="絵文字をおくる"]`)); err != nil {
+			if err := chromedp.Run(reactionCtx, chromedp.Reload(), chromedp.WaitVisible(`button[aria-label="絵文字をおくる"]`)); err != nil {
 				log.Printf("リロードに失敗: %v", err)
+				// リロード失敗時も、deferによってタイムライン復帰が試みられる
 				return false, fmt.Errorf("リロード後のボタン待機に失敗: %w", err)
 			}
 			time.Sleep(2 * time.Second)
@@ -361,4 +383,44 @@ func sendReaction(ctx context.Context, url, timelineURL string) (bool, error) {
 	}
 
 	return false, fmt.Errorf("リアクションの送信に失敗しました（3回試行）: %w", sendErr)
+}
+
+// printDependencies は go.mod ファイルを解析し、直接の依存関係を標準出力に表示します。
+func printDependencies() {
+	file, err := os.Open("go.mod")
+	if err != nil {
+		log.Printf("go.modファイルの読み込みに失敗しました: %v", err)
+		return
+	}
+	defer file.Close()
+
+	log.Println("\n--- このプログラムの実行に必要だったライブラリ一覧 ---")
+	scanner := bufio.NewScanner(file)
+	inRequireBlock := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "require (" {
+			inRequireBlock = true
+			continue
+		}
+		if line == ")" {
+			inRequireBlock = false
+			continue
+		}
+		// requireブロック内にあり、コメントではない、かつ空行でもない行を処理
+		if inRequireBlock && !strings.HasPrefix(line, "//") && line != "" {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				// 間接的な依存関係 "// indirect" を含まないもののみ出力
+				if !strings.HasSuffix(line, "// indirect") {
+					log.Printf("- %s %s", parts[0], parts[1])
+				}
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		log.Printf("go.modファイルのスキャン中にエラーが発生しました: %v", err)
+	}
+	log.Println("----------------------------------------------------")
 }
