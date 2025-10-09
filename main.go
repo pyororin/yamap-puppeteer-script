@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	cu "github.com/Davincible/chromedp-undetected"
 	"github.com/chromedp/chromedp"
 	"github.com/joho/godotenv"
 )
@@ -80,15 +79,32 @@ func main() {
 	}
 
 	// --- Chromedpの初期化 ---
-	log.Println("undetected-chromedpを使用してヘッドレスブラウザを初期化しています...")
-	ctx, cancel, err := cu.New(cu.NewConfig(
-		cu.WithHeadless(),
-		cu.WithTimeout(totalTimeout), // タイムライン処理全体を考慮してタイムアウトを延長
-	))
-	if err != nil {
-		log.Fatalf("undetected-chromedpの初期化に失敗しました: %v", err)
-	}
+	log.Println("標準のchromedpを使用してヘッドレスブラウザを初期化しています...")
+
+	// 1. Allocatorのオプションを設定
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Headless,
+		chromedp.NoSandbox,
+		chromedp.DisableGPU,
+	)
+
+	// 2. Allocatorコンテキストを作成
+	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
+	defer cancelAlloc()
+
+	// 3. 基本となるChromedpコンテキストを作成
+	baseCtx, cancelBase := chromedp.NewContext(allocCtx, chromedp.WithLogf(log.Printf))
+	defer cancelBase()
+
+	// 4. 全体の処理に対するタイムアウトを設定した最終的なコンテキストを作成
+	ctx, cancel := context.WithTimeout(baseCtx, totalTimeout)
 	defer cancel()
+
+	// ブラウザが実際に起動したことを確認
+	if err := chromedp.Run(ctx, chromedp.Navigate("about:blank")); err != nil {
+		log.Fatalf("Chromedpの初期化に失敗しました（ブラウザ起動確認エラー）: %v", err)
+	}
+	log.Println("ブラウザの初期化に成功しました。")
 
 	// --- 環境変数の読み込み ---
 	email := os.Getenv("YAMAP_EMAIL")
@@ -133,7 +149,7 @@ func login(ctx context.Context, email, password string) error {
 	// 2. ログインボタンをクリック
 	log.Println("ログインボタンをクリックします...")
 	if err := chromedp.Run(ctx,
-		chromedp.Evaluate(fmt.Sprintf("document.querySelector('%s').click()", submitButtonSelector), nil),
+		chromedp.Click(submitButtonSelector, chromedp.ByQuery),
 	); err != nil {
 		return fmt.Errorf("ログインボタンのクリックに失敗: %w", err)
 	}
