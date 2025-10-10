@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/chromedp"
 	"github.com/joho/godotenv"
 )
@@ -93,14 +94,176 @@ func main() {
 	case "react-timeline":
 		log.Println("アクション: react-timeline を実行します。")
 		runTimelineReaction()
+	case "react-activities":
+		log.Println("アクション: react-activities を実行します。")
+		runActivitiesReaction()
 	case "":
 		log.Println("エラー: -actionフラグが指定されていません。実行するアクションを指定してください。")
-		log.Println("例: go run main.go -action react-timeline")
+		log.Println("利用可能なアクション: react-timeline, react-activities")
 		os.Exit(1)
 	default:
 		log.Printf("エラー: 不明なアクション '%s' が指定されました。\n", *action)
+		log.Println("利用可能なアクション: react-timeline, react-activities")
 		os.Exit(1)
 	}
+}
+
+// runActivitiesReaction は活動一覧ページへのリアクション処理全体を実行する
+func runActivitiesReaction() {
+	log.Println("--- プログラム開始 (react-activities) ---")
+	startTime := time.Now()
+
+	log.Println("標準のchromedpを使用してヘッドレスブラウザを初期化しています...")
+	allocatorCtx, cancelAllocator := context.WithTimeout(context.Background(), 60*time.Minute)
+	defer cancelAllocator()
+
+	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Headless,
+		chromedp.NoSandbox,
+		chromedp.DisableGPU,
+	)
+	allocCtx, cancelAlloc := chromedp.NewExecAllocator(allocatorCtx, allocOpts...)
+	defer cancelAlloc()
+
+	ctx, cancel := chromedp.NewContext(allocCtx, chromedp.WithLogf(log.Printf))
+	defer cancel()
+
+	ctx, cancel = context.WithTimeout(ctx, 55*time.Minute)
+	defer cancel()
+	log.Println("ブラウザの初期化完了。")
+
+	log.Println("環境変数を読み込んでいます...")
+	email := os.Getenv("YAMAP_EMAIL")
+	password := os.Getenv("YAMAP_PASSWORD")
+	postCountStr := os.Getenv("POST_COUNT_TO_PROCESS")
+	if email == "" || password == "" || postCountStr == "" {
+		log.Fatal("環境変数 YAMAP_EMAIL, YAMAP_PASSWORD, POST_COUNT_TO_PROCESS を設定してください。")
+	}
+	postCount, err := strconv.Atoi(postCountStr)
+	if err != nil {
+		log.Fatalf("POST_COUNT_TO_PROCESSの値が不正です: %v", err)
+	}
+	log.Println("環境変数の読み込み完了。")
+
+	log.Println("ログイン処理を開始します...")
+	loginStartTime := time.Now()
+	// login関数はタイムラインへの遷移をハードコーディングしているので、ここではfalseを渡して遷移をスキップさせる
+	if err := login(ctx, email, password, false); err != nil {
+		log.Fatalf("ログインに失敗しました: %v", err)
+	}
+	log.Printf("ログイン成功。処理時間: %s", time.Since(loginStartTime))
+
+	log.Println("活動一覧ページの処理を開始します...")
+	activitiesStartTime := time.Now()
+	reactedURLs, err := processActivities(ctx, postCount)
+	if err != nil {
+		log.Printf("活動一覧ページの処理中にエラーが発生しました: %v", err)
+	}
+	log.Printf("活動一覧ページの処理完了。処理時間: %s", time.Since(activitiesStartTime))
+
+	if len(reactedURLs) > 0 {
+		log.Println("\n--- 「いいね！」した投稿一覧 ---")
+		for _, url := range reactedURLs {
+			log.Println(url)
+		}
+		log.Println("---------------------------------")
+	}
+
+	log.Printf("--- 全ての処理が正常に完了しました ---")
+	log.Printf("総処理時間: %s", time.Since(startTime))
+
+	printDependencies()
+}
+
+// processActivities は活動一覧ページを処理してリアクションを送信する
+func processActivities(ctx context.Context, postCountToProcess int) ([]string, error) {
+	log.Println("活動一覧ページに移動します: https://yamap.com/search/activities")
+	if err := chromedp.Run(ctx,
+		chromedp.Navigate("https://yamap.com/search/activities"),
+		chromedp.WaitVisible(`[data-testid="activity-entry"]`),
+	); err != nil {
+		return nil, fmt.Errorf("活動一覧ページの読み込みに失敗: %w", err)
+	}
+
+	var activityURLs []string
+	seenURLs := make(map[string]struct{})
+	var lastHeight int64
+	noNewContentCount := 0
+
+	log.Println("活動一覧ページから投稿URLを収集します...")
+	for len(activityURLs) < postCountToProcess {
+		var nodes []*cdp.Node
+		if err := chromedp.Run(ctx,
+			chromedp.Nodes(`[data-testid="activity-entry"] a[href^="/activities/"]`, &nodes, chromedp.ByQueryAll),
+		); err != nil {
+			log.Printf("URLノードの取得に失敗: %v", err)
+			break
+		}
+
+		initialCount := len(activityURLs)
+		for _, node := range nodes {
+			url := "https://yamap.com" + node.AttributeValue("href")
+			if _, seen := seenURLs[url]; !seen {
+				seenURLs[url] = struct{}{}
+				activityURLs = append(activityURLs, url)
+				log.Printf("投稿URLを発見: %s (現在 %d 件)", url, len(activityURLs))
+				if len(activityURLs) >= postCountToProcess {
+					goto collected
+				}
+			}
+		}
+		if len(activityURLs) == initialCount {
+			noNewContentCount++
+		} else {
+			noNewContentCount = 0
+		}
+
+		if noNewContentCount >= 5 {
+			log.Println("5回連続で新しい投稿が読み込まれませんでした。ページの終端と判断します。")
+			break
+		}
+
+		var currentHeight int64
+		if err := chromedp.Run(ctx, chromedp.Evaluate(`document.body.scrollHeight`, &currentHeight)); err != nil {
+			log.Printf("ページの高さの取得に失敗: %v", err)
+			break
+		}
+		if currentHeight == lastHeight {
+			log.Println("ページの高さが変わりませんでした。ページの終端に到達した可能性があります。")
+			noNewContentCount++
+		}
+		lastHeight = currentHeight
+
+		log.Println("ページを下にスクロールします...")
+		if err := chromedp.Run(ctx, chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight)`, nil)); err != nil {
+			log.Printf("ページスクロールに失敗: %v", err)
+			break
+		}
+		time.Sleep(3 * time.Second) // 新しいコンテンツが読み込まれるのを待つ
+	}
+
+collected:
+	log.Printf("%d件の投稿URLを収集しました。リアクション処理を開始します。", len(activityURLs))
+	var reactedURLs []string
+	for i, url := range activityURLs {
+		log.Printf("--- 投稿 %d/%d を処理中 ---", i+1, len(activityURLs))
+		liked, err := sendReaction(ctx, url)
+		if err != nil {
+			log.Printf("リアクション処理でエラーが発生しました (%s): %v", url, err)
+		}
+		if liked {
+			reactedURLs = append(reactedURLs, url)
+			log.Printf("いいね！しました。(現在 %d/%d 件)", len(reactedURLs), len(activityURLs))
+		}
+		if ctx.Err() != nil {
+			log.Println("メインコンテキストがキャンセルされたため、リアクション処理を中断します。")
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	log.Printf("いいね！の送信が完了しました。最終的な成功件数: %d", len(reactedURLs))
+	return reactedURLs, nil
 }
 
 // runTimelineReaction はタイムラインへのリアクション処理全体を実行する
@@ -144,7 +307,7 @@ func runTimelineReaction() {
 
 	log.Println("ログイン処理を開始します...")
 	loginStartTime := time.Now()
-	if err := login(ctx, email, password); err != nil {
+	if err := login(ctx, email, password, true); err != nil {
 		log.Fatalf("ログインに失敗しました: %v", err)
 	}
 	log.Printf("ログイン成功。処理時間: %s", time.Since(loginStartTime))
@@ -171,7 +334,7 @@ func runTimelineReaction() {
 	printDependencies()
 }
 
-func login(ctx context.Context, email, password string) error {
+func login(ctx context.Context, email, password string, navigateToTimeline bool) error {
 	log.Println("ログインページに移動し、フォームを入力します...")
 	if err := chromedp.Run(ctx,
 		chromedp.Navigate("https://yamap.com/login"),
@@ -182,29 +345,53 @@ func login(ctx context.Context, email, password string) error {
 		return fmt.Errorf("フォーム入力に失敗: %w", err)
 	}
 
-	log.Println("ログインボタンをクリックし、明示的にタイムラインへ移動します...")
+	log.Println("ログインボタンをクリックします...")
 	loginCtx, loginCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer loginCancel()
 
-	err := chromedp.Run(loginCtx,
-		// 1. ログインボタンをクリック
+	actions := []chromedp.Action{
 		chromedp.Evaluate(`document.querySelector('button[type="submit"]').click()`, nil),
-		// 2. サーバーからの応答とリダイレクトを待つために少し待機
-		chromedp.Sleep(5*time.Second),
-		// 3. セッションが確立された後、明示的にタイムラインページに移動
-		chromedp.Navigate("https://yamap.com/timeline"),
-		// 4. タイムラインフィードが表示されるまで待機
-		chromedp.WaitVisible(`.TimelineList__Feed`, chromedp.ByQuery),
-	)
-	if err != nil {
-		log.Println("ログイン後のタイムラインへの移動または表示確認に失敗しました。")
+		// サーバーからの応答とリダイレクトを待つために少し待機
+		chromedp.Sleep(5 * time.Second),
+	}
+
+	if navigateToTimeline {
+		log.Println("明示的にタイムラインへ移動します...")
+		actions = append(actions,
+			chromedp.Navigate("https://yamap.com/timeline"),
+			chromedp.WaitVisible(`.TimelineList__Feed`, chromedp.ByQuery),
+		)
+	} else {
+		log.Println("ログイン成功を確認するため、マイページリンクの表示を待ちます...")
+		// ログイン後の汎用的な待機条件として、フッターが表示されるのを待つ
+		actions = append(actions,
+			chromedp.WaitVisible(`footer[data-global-footer="true"]`, chromedp.ByQuery),
+		)
+	}
+
+	if err := chromedp.Run(loginCtx, actions...); err != nil {
+		log.Println("ログイン後のページ遷移または要素の表示確認に失敗しました。デバッグ情報を保存します...")
 		var buf []byte
-		if scrErr := chromedp.Run(ctx, chromedp.FullScreenshot(&buf, 90)); scrErr != nil {
-			log.Printf("スクリーンショットの取得に失敗: %v", scrErr)
-		} else if wErr := os.WriteFile("login_failure_screenshot.png", buf, 0644); wErr != nil {
-			log.Printf("スクリーンショットの保存に失敗: %v", wErr)
+		var htmlContent string
+		// スクリーンショットとHTMLを取得
+		if dbgErr := chromedp.Run(ctx,
+			chromedp.FullScreenshot(&buf, 90),
+			chromedp.OuterHTML("html", &htmlContent),
+		); dbgErr != nil {
+			log.Printf("デバッグ情報（スクリーンショット/HTML）の取得に失敗: %v", dbgErr)
+		} else {
+			if wErr := os.WriteFile("login_failure_screenshot.png", buf, 0644); wErr != nil {
+				log.Printf("スクリーンショットの保存に失敗: %v", wErr)
+			} else {
+				log.Println("スクリーンショットを login_failure_screenshot.png に保存しました。")
+			}
+			if wErr := os.WriteFile("login_failure.html", []byte(htmlContent), 0644); wErr != nil {
+				log.Printf("HTMLの保存に失敗: %v", wErr)
+			} else {
+				log.Println("HTMLを login_failure.html に保存しました。")
+			}
 		}
-		return fmt.Errorf("タイムラインへの移動または表示確認に失敗: %w", err)
+		return fmt.Errorf("ログイン後の処理に失敗: %w", err)
 	}
 
 	log.Println("ログイン成功を確認しました。")
