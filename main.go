@@ -88,8 +88,8 @@ func main() {
 	startTime := time.Now()
 
 	log.Println("標準のchromedpを使用してヘッドレスブラウザを初期化しています...")
-	// 多数の投稿を処理する際にブラウザセッションがタイムアウトしないよう、アロケータのタイムアウトを15分に延長
-	allocatorCtx, cancelAllocator := context.WithTimeout(context.Background(), 15*time.Minute)
+	// 多数の投稿を処理する際にブラウザセッションがタイムアウトしないよう、アロケータのタイムアウトを60分に延長
+	allocatorCtx, cancelAllocator := context.WithTimeout(context.Background(), 60*time.Minute)
 	defer cancelAllocator()
 
 	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
@@ -103,7 +103,8 @@ func main() {
 	ctx, cancel := chromedp.NewContext(allocCtx, chromedp.WithLogf(log.Printf))
 	defer cancel()
 
-	ctx, cancel = context.WithTimeout(ctx, 30*time.Minute)
+	// メインのコンテキストタイムアウトは넉넉하게設定
+	ctx, cancel = context.WithTimeout(ctx, 55*time.Minute)
 	defer cancel()
 	log.Println("ブラウザの初期化完了。")
 
@@ -190,193 +191,174 @@ func login(ctx context.Context, email, password string) error {
 }
 
 func processTimeline(ctx context.Context, postCountToProcess int) ([]string, error) {
-	log.Println("タイムラインの処理とリアクション送信を開始します。")
+	log.Println("タイムライン上の未リアクションの投稿URLを収集します...")
 
-	var reactedURLs []string // 「いいね！」したURLを保存するスライス
+	var activitiesToProcess []ActivityInfo
 	seenActivityIDs := make(map[int64]struct{})
-	var successfulReactions int
 	var lastHeight int64
 	noNewContentCount := 0
-	timelineURL := "https://yamap.com/timeline"
 
-	for successfulReactions < postCountToProcess {
-		var activitiesToProcess []ActivityInfo
-		var feedItems []FeedItem
-		var err error
-
+	for len(activitiesToProcess) < postCountToProcess {
 		select {
 		case <-ctx.Done():
-			log.Println("処理中にタイムアウトしました。")
-			return reactedURLs, ctx.Err()
+			log.Println("URL収集中にタイムアウトしました。")
+			return nil, ctx.Err()
 		default:
 		}
 
-		var currentURL string
-		chromedp.Run(ctx, chromedp.Location(&currentURL))
-		if !strings.HasPrefix(currentURL, timelineURL) {
-			log.Printf("タイムラインページ (%s) にいません。移動します...", timelineURL)
-			if err := chromedp.Run(ctx, chromedp.Navigate(timelineURL), chromedp.WaitVisible(`.TimelineList__Feed`, chromedp.ByQuery)); err != nil {
-				log.Printf("タイムラインへの復帰に失敗: %v", err)
-				return reactedURLs, err
-			}
-		}
-
-		log.Println("タイムラインのJavaScriptデータの読み込みを待機します...")
 		if err := chromedp.Run(ctx,
 			chromedp.WaitVisible(`.TimelineList__Feed`, chromedp.ByQuery),
 			chromedp.Poll(`window.__NUXT__ && window.__NUXT__.state && window.__NUXT__.state.timeline && window.__NUXT__.state.timeline.feeds`, nil, chromedp.WithPollingTimeout(20*time.Second)),
 		); err != nil {
-			log.Printf("タイムラインデータの準備待機中にタイムアウトまたはエラーが発生しました: %v。スクロールして再試行します。", err)
-			var htmlContent string
-			if dbgErr := chromedp.Run(ctx, chromedp.OuterHTML("html", &htmlContent)); dbgErr == nil {
-				os.WriteFile("timeline_page_on_wait_error.html", []byte(htmlContent), 0644)
-				log.Println("待機エラー発生時のHTMLを timeline_page_on_wait_error.html に保存しました。")
-			}
-			goto scroll
+			log.Printf("タイムラインデータの準備待機中にエラーが発生しました: %v", err)
+			break // ループを抜けて収集したURLの処理に移る
 		}
 
-		feedItems, err = parseNuxtData(ctx)
+		feedItems, err := parseNuxtData(ctx)
 		if err != nil {
-			log.Printf("NUXTデータのパースに失敗: %v。スクロールして再試行します。", err)
-			goto scroll
+			log.Printf("NUXTデータのパースに失敗: %v", err)
+			break
 		}
 
-		if len(feedItems) > 0 {
-			for _, item := range feedItems {
-				// FeedにはActivity以外の項目(Journalなど)も含まれるため、Activityがnilでないことを確認
-				if item.Activity == nil {
-					continue
-				}
-				activity := *item.Activity // ポインタを実体に変換
-				if activity.ID == 0 {
-					continue
-				}
-				if _, seen := seenActivityIDs[activity.ID]; !seen {
-					seenActivityIDs[activity.ID] = struct{}{}
-					hasReacted := false
-					if len(activity.EmojiReactions) > 0 {
-						for _, reaction := range activity.EmojiReactions {
-							if reaction.ViewerHasReacted {
-								hasReacted = true
-								break
-							}
-						}
+		initialCount := len(activitiesToProcess)
+		for _, item := range feedItems {
+			if item.Activity == nil || item.Activity.ID == 0 {
+				continue
+			}
+			if _, seen := seenActivityIDs[item.Activity.ID]; !seen {
+				seenActivityIDs[item.Activity.ID] = struct{}{}
+				hasReacted := false
+				for _, reaction := range item.Activity.EmojiReactions {
+					if reaction.ViewerHasReacted {
+						hasReacted = true
+						break
 					}
-					if !hasReacted {
-						url := fmt.Sprintf("https://yamap.com/activities/%d", activity.ID)
-						activitiesToProcess = append(activitiesToProcess, ActivityInfo{URL: url})
-						log.Printf("未リアクションの投稿を発見: %s", url)
+				}
+				if !hasReacted {
+					url := fmt.Sprintf("https://yamap.com/activities/%d", item.Activity.ID)
+					activitiesToProcess = append(activitiesToProcess, ActivityInfo{URL: url})
+					log.Printf("未リアクションの投稿を発見: %s (現在 %d 件)", url, len(activitiesToProcess))
+					if len(activitiesToProcess) >= postCountToProcess {
+						goto collected
 					}
 				}
 			}
 		}
 
-		if len(activitiesToProcess) == 0 {
+		if len(activitiesToProcess) == initialCount {
 			noNewContentCount++
-			log.Printf("新しい未リアクションの投稿が見つかりませんでした。(試行 %d/3)", noNewContentCount)
 		} else {
 			noNewContentCount = 0
-			log.Printf("%d件の未リアクション投稿を処理します。", len(activitiesToProcess))
 		}
 
-		for _, activity := range activitiesToProcess {
-			// タイムアウト処理は sendReaction 内に移動
-			liked, err := sendReaction(ctx, activity.URL, timelineURL)
-
-			if err != nil {
-				log.Printf("リアクション処理でエラーが発生しました (%s): %v", activity.URL, err)
-			}
-			if liked {
-				reactedURLs = append(reactedURLs, activity.URL)
-				successfulReactions++
-				log.Printf("いいね！しました。(現在 %d/%d 件)", successfulReactions, postCountToProcess)
-				if successfulReactions >= postCountToProcess {
-					log.Printf("目標の %d 件の「いいね！」を達成しました。", postCountToProcess)
-					goto end
-				}
-			}
-			time.Sleep(1 * time.Second)
-		}
-
-	scroll:
-		if successfulReactions >= postCountToProcess {
+		if noNewContentCount >= 5 {
+			log.Println("5回連続で新しい投稿が読み込まれませんでした。タイムラインの終端と判断します。")
 			break
 		}
 
 		var currentHeight int64
 		if err := chromedp.Run(ctx, chromedp.Evaluate(`document.body.scrollHeight`, &currentHeight)); err != nil {
 			log.Printf("ページの高さの取得に失敗: %v", err)
-			return reactedURLs, err
+			break
 		}
-
-		if noNewContentCount > 0 && currentHeight == lastHeight {
-			if noNewContentCount >= 3 {
-				log.Println("タイムラインの終端に到達したか、新しい投稿が読み込まれませんでした。処理を終了します。")
-				break
-			}
+		if currentHeight == lastHeight {
+			log.Println("ページの高さが変わりませんでした。タイムラインの終端に到達した可能性があります。")
+			noNewContentCount++
 		}
 		lastHeight = currentHeight
 
 		log.Println("ページを下にスクロールします...")
 		if err := chromedp.Run(ctx, chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight)`, nil)); err != nil {
 			log.Printf("ページスクロールに失敗: %v", err)
-			return reactedURLs, err
+			break
 		}
 		time.Sleep(5 * time.Second)
 	}
 
-end:
-	log.Printf("いいね！の送信が完了しました。最終的な成功件数: %d", successfulReactions)
+collected:
+	log.Printf("%d件の未リアクション投稿を収集しました。リアクション処理を開始します。", len(activitiesToProcess))
+
+	var reactedURLs []string
+	for i, activity := range activitiesToProcess {
+		log.Printf("--- 投稿 %d/%d を処理中 ---", i+1, len(activitiesToProcess))
+		liked, err := sendReaction(ctx, activity.URL)
+		if err != nil {
+			log.Printf("リアクション処理でエラーが発生しました (%s): %v", activity.URL, err)
+		}
+		if liked {
+			reactedURLs = append(reactedURLs, activity.URL)
+			log.Printf("いいね！しました。(現在 %d/%d 件)", len(reactedURLs), len(activitiesToProcess))
+		}
+		// メインのコンテキストがキャンセルされた場合は、ループを中断
+		if ctx.Err() != nil {
+			log.Println("メインコンテキストがキャンセルされたため、リアクション処理を中断します。")
+			break
+		}
+		time.Sleep(2 * time.Second) // 連続アクセスを避けるための待機
+	}
+
+	log.Printf("いいね！の送信が完了しました。最終的な成功件数: %d", len(reactedURLs))
 	return reactedURLs, nil
 }
 
-func sendReaction(parentCtx context.Context, url, timelineURL string) (bool, error) {
-	// この関数専用のタイムアウト付きコンテキストを作成（3分）
-	reactionCtx, cancel := context.WithTimeout(parentCtx, 3*time.Minute)
+func sendReaction(parentCtx context.Context, url string) (bool, error) {
+	reactionCtx, cancel := context.WithTimeout(parentCtx, 20*time.Minute)
 	defer cancel()
 
 	log.Printf("投稿ページに移動してリアクションを送信します: %s", url)
-	// deferブロックでは、タイムアウトしない親コンテキストを使用して、タイムラインへの復帰を確実に行う
-	defer func() {
-		log.Printf("タイムライン (%s) に戻ります...", timelineURL)
-		// reactionCtxがタイムアウトしても、parentCtxは有効なため、ナビゲーションが可能
-		// 復帰処理にはタイムアウトを設けない（メインのタイムアウトに依存）
-		err := chromedp.Run(parentCtx,
-			chromedp.Navigate(timelineURL),
-			chromedp.WaitVisible(`.TimelineList__Feed`, chromedp.ByQuery),
-		)
-		if err != nil {
-			// 親コンテキスト自体がタイムアウトしているような、より大きな問題が発生した場合にログを出力
-			if parentCtx.Err() != nil {
-				log.Printf("親コンテキストが終了しているため、タイムラインへの復帰ができませんでした: %v", parentCtx.Err())
-			} else {
-				log.Printf("タイムラインへの自動復帰に失敗しました: %v", err)
-			}
-		}
-	}()
 
-	// リアクション関連の動作は、タイムアウトが設定されたreactionCtxを使用
-	if err := chromedp.Run(reactionCtx, chromedp.Navigate(url), chromedp.WaitVisible(`button[aria-label="絵文字をおくる"]`)); err != nil {
-		return false, fmt.Errorf("投稿ページへの移動またはボタンの待機に失敗: %w", err)
+	if err := chromedp.Run(reactionCtx, chromedp.Navigate(url), chromedp.WaitVisible(`.FooterNav`, chromedp.ByQuery)); err != nil {
+		log.Println("リアクションページの基本読み込みに失敗しました。")
+		return false, fmt.Errorf("投稿ページの基本読み込みに失敗: %w", err)
+	}
+
+	if err := chromedp.Run(reactionCtx,
+		chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight);`, nil),
+		chromedp.WaitVisible(`.emoji-add-button`, chromedp.ByQuery),
+	); err != nil {
+		log.Println("リアクションボタンの表示待機に失敗しました。")
+		return false, fmt.Errorf("リアクションボタンの表示待機に失敗: %w", err)
 	}
 
 	var sendErr error
 	for i := 0; i < 3; i++ {
 		log.Printf("リアクション試行 %d回目: %s", i+1, url)
-		sendErr = chromedp.Run(reactionCtx,
-			chromedp.Click(`button[aria-label="絵文字をおくる"]`, chromedp.ByQuery),
+
+		if err := chromedp.Run(reactionCtx,
+			chromedp.Click(`.emoji-add-button`, chromedp.ByQuery),
 			chromedp.WaitVisible(`.emojiPickerBody`),
-			chromedp.Click(`button.emoji-picker-button[data-emoji-key='thumbs_up']`, chromedp.ByQuery),
-			chromedp.Sleep(3*time.Second),
-		)
+			chromedp.Sleep(2*time.Second),
+		); err != nil {
+			log.Printf("絵文字ピッカーの表示に失敗: %v", err)
+			sendErr = err
+			continue
+		}
+
+		var nodeCount int
+		if err := chromedp.Run(reactionCtx, chromedp.Evaluate(`document.querySelectorAll('.reactionsContainer .emojiButton').length`, &nodeCount)); err != nil {
+			log.Printf("リアクションボタンの数の確認に失敗: %v", err)
+			sendErr = err
+			continue
+		}
+
+		if nodeCount > 0 {
+			log.Println("最初のリアクションボタンをクリックします。")
+			sendErr = chromedp.Run(reactionCtx,
+				chromedp.Click(`.reactionsContainer .emojiButton:first-child`, chromedp.ByQuery),
+				chromedp.Sleep(3*time.Second),
+			)
+		} else {
+			log.Println("利用可能なリアクションが見つからなかったため、この投稿をスキップします。")
+			sendErr = nil
+		}
 
 		if sendErr == nil {
 			log.Printf("リアクションの送信に成功しました: %s", url)
 			return true, nil
 		}
+
 		log.Printf("試行 %d回目が失敗しました (%s): %v", i+1, url, sendErr)
 
-		// タイムアウトなどのエラーが発生した場合、リトライせずにループを抜ける
 		if reactionCtx.Err() != nil {
 			log.Printf("コンテキストエラーのためリアクション処理を中断します: %v", reactionCtx.Err())
 			break
@@ -384,9 +366,8 @@ func sendReaction(parentCtx context.Context, url, timelineURL string) (bool, err
 
 		if i < 2 {
 			log.Println("ページをリロードして再試行します...")
-			if err := chromedp.Run(reactionCtx, chromedp.Reload(), chromedp.WaitVisible(`button[aria-label="絵文字をおくる"]`)); err != nil {
+			if err := chromedp.Run(reactionCtx, chromedp.Reload(), chromedp.WaitVisible(`.emoji-add-button`)); err != nil {
 				log.Printf("リロードに失敗: %v", err)
-				// リロード失敗時も、deferによってタイムライン復帰が試みられる
 				return false, fmt.Errorf("リロード後のボタン待機に失敗: %w", err)
 			}
 			time.Sleep(2 * time.Second)
