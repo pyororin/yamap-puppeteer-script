@@ -1,0 +1,32 @@
+name: Daily YAMAP Activities Like
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 日本時間の毎日12:00 (UTC 03:00) に実行
+    - cron: '0 3 * * *'
+
+jobs:
+  trigger-jules-session:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Jules API to start YAMAP Activities Like session
+        env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+        run: |
+          JSON_PAYLOAD=$(printf '{
+            "prompt": "AGENTS.mdの指示に従い、このリポジトリのSecretsに設定されているYAMAP_EMAILとYAMAP_PASSWORDを使用して `go run main.go -action react-activities` を実行し、YAMAPの活動一覧ページから投稿に自動で「いいね」をしてください。",
+            "sourceContext": {
+              "source": "sources/github/%s",
+              "githubRepoContext": {
+                "startingBranch": "main"
+              }
+            },
+            "title": "Daily YAMAP Activities Like"
+          }' "$GITHUB_REPOSITORY")
+
+          # APIを呼び出す
+          curl -f -X POST 'https://jules.googleapis.com/v1alpha/sessions' \
+          -H 'Content-Type: application/json' \
+          -H "X-Goog-Api-Key: $JULES_API_KEY" \
+          -d "$JSON_PAYLOAD"
