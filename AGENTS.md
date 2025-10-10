@@ -30,9 +30,9 @@
     ```
 
 4.  **スクリプトの実行:**
-    以下のコマンドでスクリプトを実行します。`.env`ファイルが自動的に読み込まれます。
+    タイムラインへの「いいね！」機能を使うには、`-action react-timeline` フラグを付けてスクリプトを実行します。
     ```bash
-    go run main.go
+    go run main.go -action react-timeline
     ```
 
 ## エージェントへの指示
