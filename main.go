@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -80,10 +81,30 @@ func parseNuxtData(ctx context.Context) ([]FeedItem, error) {
 
 
 func main() {
+	// コマンドライン引数の解析
+	action := flag.String("action", "", "実行するアクション (例: react-timeline)")
+	flag.Parse()
+
 	if err := godotenv.Load(); err != nil {
 		log.Println("警告: .envファイルが見つからないか、読み込みに失敗しました。")
 	}
 
+	switch *action {
+	case "react-timeline":
+		log.Println("アクション: react-timeline を実行します。")
+		runTimelineReaction()
+	case "":
+		log.Println("エラー: -actionフラグが指定されていません。実行するアクションを指定してください。")
+		log.Println("例: go run main.go -action react-timeline")
+		os.Exit(1)
+	default:
+		log.Printf("エラー: 不明なアクション '%s' が指定されました。\n", *action)
+		os.Exit(1)
+	}
+}
+
+// runTimelineReaction はタイムラインへのリアクション処理全体を実行する
+func runTimelineReaction() {
 	log.Println("--- プログラム開始 ---")
 	startTime := time.Now()
 
