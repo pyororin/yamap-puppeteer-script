@@ -129,10 +129,19 @@ func main() {
 
 	log.Println("タイムラインの処理を開始します...")
 	timelineStartTime := time.Now()
-	if err := processTimeline(ctx, postCount); err != nil {
-		log.Fatalf("タイムライン処理中に致命的なエラーが発生しました: %v", err)
+	reactedURLs, err := processTimeline(ctx, postCount)
+	if err != nil {
+		log.Printf("タイムライン処理中にエラーが発生しました: %v", err)
 	}
 	log.Printf("タイムライン処理完了。処理時間: %s", time.Since(timelineStartTime))
+
+	if len(reactedURLs) > 0 {
+		log.Println("\n--- 「いいね！」した投稿一覧 ---")
+		for _, url := range reactedURLs {
+			log.Println(url)
+		}
+		log.Println("---------------------------------")
+	}
 
 	log.Printf("--- 全ての処理が正常に完了しました ---")
 	log.Printf("総処理時間: %s", time.Since(startTime))
@@ -180,9 +189,10 @@ func login(ctx context.Context, email, password string) error {
 	return nil
 }
 
-func processTimeline(ctx context.Context, postCountToProcess int) error {
+func processTimeline(ctx context.Context, postCountToProcess int) ([]string, error) {
 	log.Println("タイムラインの処理とリアクション送信を開始します。")
 
+	var reactedURLs []string // 「いいね！」したURLを保存するスライス
 	seenActivityIDs := make(map[int64]struct{})
 	var successfulReactions int
 	var lastHeight int64
@@ -197,7 +207,7 @@ func processTimeline(ctx context.Context, postCountToProcess int) error {
 		select {
 		case <-ctx.Done():
 			log.Println("処理中にタイムアウトしました。")
-			return ctx.Err()
+			return reactedURLs, ctx.Err()
 		default:
 		}
 
@@ -207,7 +217,7 @@ func processTimeline(ctx context.Context, postCountToProcess int) error {
 			log.Printf("タイムラインページ (%s) にいません。移動します...", timelineURL)
 			if err := chromedp.Run(ctx, chromedp.Navigate(timelineURL), chromedp.WaitVisible(`.TimelineList__Feed`, chromedp.ByQuery)); err != nil {
 				log.Printf("タイムラインへの復帰に失敗: %v", err)
-				return err
+				return reactedURLs, err
 			}
 		}
 
@@ -277,6 +287,7 @@ func processTimeline(ctx context.Context, postCountToProcess int) error {
 				log.Printf("リアクション処理でエラーが発生しました (%s): %v", activity.URL, err)
 			}
 			if liked {
+				reactedURLs = append(reactedURLs, activity.URL)
 				successfulReactions++
 				log.Printf("いいね！しました。(現在 %d/%d 件)", successfulReactions, postCountToProcess)
 				if successfulReactions >= postCountToProcess {
@@ -295,7 +306,7 @@ func processTimeline(ctx context.Context, postCountToProcess int) error {
 		var currentHeight int64
 		if err := chromedp.Run(ctx, chromedp.Evaluate(`document.body.scrollHeight`, &currentHeight)); err != nil {
 			log.Printf("ページの高さの取得に失敗: %v", err)
-			break
+			return reactedURLs, err
 		}
 
 		if noNewContentCount > 0 && currentHeight == lastHeight {
@@ -309,14 +320,14 @@ func processTimeline(ctx context.Context, postCountToProcess int) error {
 		log.Println("ページを下にスクロールします...")
 		if err := chromedp.Run(ctx, chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight)`, nil)); err != nil {
 			log.Printf("ページスクロールに失敗: %v", err)
-			break
+			return reactedURLs, err
 		}
 		time.Sleep(5 * time.Second)
 	}
 
 end:
 	log.Printf("いいね！の送信が完了しました。最終的な成功件数: %d", successfulReactions)
-	return nil
+	return reactedURLs, nil
 }
 
 func sendReaction(parentCtx context.Context, url, timelineURL string) (bool, error) {
