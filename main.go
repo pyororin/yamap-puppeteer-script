@@ -542,23 +542,15 @@ func sendReaction(parentCtx context.Context, url string) (bool, error) {
 			continue
 		}
 
-		var nodeCount int
-		if err := chromedp.Run(reactionCtx, chromedp.Evaluate(`document.querySelectorAll('.reactionsContainer .emojiButton').length`, &nodeCount)); err != nil {
-			log.Printf("リアクションボタンの数の確認に失敗: %v", err)
-			sendErr = err
-			continue
-		}
-
-		if nodeCount > 0 {
-			log.Println("最初のリアクションボタンをクリックします。")
-			sendErr = chromedp.Run(reactionCtx,
-				chromedp.Click(`.reactionsContainer .emojiButton:first-child`, chromedp.ByQuery),
-				chromedp.Sleep(3*time.Second),
-			)
-		} else {
-			log.Println("利用可能なリアクションが見つからなかったため、この投稿をスキップします。")
-			sendErr = nil
-		}
+		// 以前はリアクション済みの絵文字をクリックしようとしていたが、
+		// 0件の場合はピッカーから選択する必要があるためロジックを修正。
+		// ピッカー内の最初の絵文字ボタンをクリックする。
+		log.Println("絵文字ピッカーから最初の絵文字を選択してクリックします。")
+		sendErr = chromedp.Run(reactionCtx,
+			// ご指摘のHTML構造に基づき、絵文字ピッカー内の最初のボタンをクリックするよう修正
+			chromedp.Click(`.emojiPickerBody .emoji-picker-button:first-child`, chromedp.ByQuery),
+			chromedp.Sleep(3*time.Second), // Wait for the reaction to be sent
+		)
 
 		if sendErr == nil {
 			log.Printf("リアクションの送信に成功しました: %s", url)
