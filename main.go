@@ -546,9 +546,10 @@ func sendReaction(parentCtx context.Context, url string) (bool, error) {
 		// 0件の場合はピッカーから選択する必要があるためロジックを修正。
 		// ピッカー内の最初の絵文字ボタンをクリックする。
 		log.Println("絵文字ピッカーから最初の絵文字を選択してクリックします。")
+
 		sendErr = chromedp.Run(reactionCtx,
 			// ご指摘のHTML構造に基づき、絵文字ピッカー内の最初のボタンをクリックするよう修正
-			chromedp.Click(`.emojiPickerBody .emoji-picker-button:first-child`, chromedp.ByQuery),
+			chromedp.Click(`.emojiPickerBody .emoji-button:first-child`, chromedp.ByQuery),
 			chromedp.Sleep(3*time.Second), // Wait for the reaction to be sent
 		)
 
