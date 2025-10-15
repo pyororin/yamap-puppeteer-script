@@ -549,7 +549,7 @@ func sendReaction(parentCtx context.Context, url string) (bool, error) {
 
 		sendErr = chromedp.Run(reactionCtx,
 			// HTML構造の変更に対応し、セレクタを修正
-			chromedp.Click(`.emojiPickerBody .emoji-picker-button:first-child`, chromedp.ByQuery),
+			chromedp.Click(`.emojiPickerBody .emojiButton:first-child`, chromedp.ByQuery),
 			chromedp.Sleep(3*time.Second), // Wait for the reaction to be sent
 		)
 
