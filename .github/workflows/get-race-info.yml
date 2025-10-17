@@ -1,0 +1,56 @@
+name: Get Race Info
+
+on:
+  workflow_dispatch:
+    inputs:
+      race_date:
+        description: '検索するレースの開催日 (例: 2024-10-27)'
+        required: true
+        type: string
+      race_location:
+        description: '検索するレースの開催場所 (例: 横浜)'
+        required: true
+        type: string
+
+jobs:
+  trigger-jules-session:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Trigger Jules API to get race info
+        env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          RACE_DATE: ${{ inputs.race_date }}
+          RACE_LOCATION: ${{ inputs.race_location }}
+        run: |
+          # プロンプトファイルを読み込む
+          PROMPT_TEMPLATE=$(cat prompts/get_race_info.md)
+
+          # jqを使用してプロンプトテンプレートを安全にJSON文字列に変換
+          PROMPT_JSON_STRING=$(echo "$PROMPT_TEMPLATE" | jq -R -s .)
+
+          # printf を使用してJSONペイロードの骨格を作成
+          JSON_PAYLOAD_TEMPLATE=$(printf '{
+            "prompt": %s,
+            "sourceContext": {
+              "source": "sources/github/%s",
+              "githubRepoContext": {
+                "startingBranch": "main"
+              }
+            },
+            "title": "Get Race Info: %s at %s"
+          }' "$PROMPT_JSON_STRING" "$GITHUB_REPOSITORY" "$RACE_DATE" "$RACE_LOCATION")
+
+          # プロンプト内のプレースホルダーを入力値で置換
+          JSON_PAYLOAD=$(echo "$JSON_PAYLOAD_TEMPLATE" | sed "s|\${{ inputs.race_date }}|$RACE_DATE|g" | sed "s|\${{ inputs.race_location }}|$RACE_LOCATION|g")
+
+          echo "Generated JSON Payload:"
+          echo "$JSON_PAYLOAD"
+
+          # APIを呼び出す
+          curl -f -X POST 'https://jules.googleapis.com/v1alpha/sessions' \
+          -H 'Content-Type: application/json' \
+          -H "X-Goog-Api-Key: $JULES_API_KEY" \
+          -d "$JSON_PAYLOAD"
