@@ -177,28 +177,61 @@ func runActivitiesReaction() {
 
 // processActivities は活動一覧ページを処理してリアクションを送信する
 func processActivities(ctx context.Context, postCountToProcess int) ([]string, error) {
-	log.Println("活動一覧ページに移動します: https://yamap.com/search/activities")
-	if err := chromedp.Run(ctx,
-		chromedp.Navigate("https://yamap.com/search/activities"),
-		chromedp.WaitVisible(`[data-testid="activity-entry"]`),
-	); err != nil {
-		return nil, fmt.Errorf("活動一覧ページの読み込みに失敗: %w", err)
-	}
-
 	var activityURLs []string
 	seenURLs := make(map[string]struct{})
-	var lastHeight int64
-	noNewContentCount := 0
+	page := 1
+	consecutiveEmptyPages := 0
 
 	log.Println("活動一覧ページから投稿URLを収集します...")
 	for len(activityURLs) < postCountToProcess {
-		var nodes []*cdp.Node
-		if err := chromedp.Run(ctx,
-			chromedp.Nodes(`[data-testid="activity-entry"] a[href^="/activities/"]`, &nodes, chromedp.ByQueryAll),
-		); err != nil {
-			log.Printf("URLノードの取得に失敗: %v", err)
+		// コンテキストがキャンセルされたかチェック
+		if ctx.Err() != nil {
+			log.Println("URL収集中にコンテキストがキャンセルされました。")
 			break
 		}
+
+		pageURL := fmt.Sprintf("https://yamap.com/search/activities?page=%d", page)
+		log.Printf("%dページ目に移動します: %s", page, pageURL)
+
+		var nodes []*cdp.Node
+		// ページ遷移のコンテキストにタイムアウトを設定
+		pageCtx, pageCancel := context.WithTimeout(ctx, 30*time.Second)
+		defer pageCancel()
+
+		// ページに移動し、フッターが表示されるのを待つ（フッターはどのページにもあるため）
+		err := chromedp.Run(pageCtx,
+			chromedp.Navigate(pageURL),
+			chromedp.WaitVisible(`footer[data-global-footer="true"]`),
+		)
+		if err != nil {
+			log.Printf("%dページ目への移動または待機に失敗しました: %v", page, err)
+			// タイムアウトなどの場合、次のページの試行は無意味なのでループを抜ける
+			break
+		}
+
+		// ページに活動エントリが存在するかどうかを確認
+		err = chromedp.Run(ctx,
+			chromedp.Nodes(`[data-testid="activity-entry"] a[href^="/activities/"]`, &nodes, chromedp.ByQueryAll),
+		)
+
+		// エラーが発生した場合、またはノードが見つからない場合は、ページの終端と見なす
+		if err != nil {
+			log.Printf("%dページ目で活動エントリの取得に失敗しました。おそらく最終ページです: %v", page, err)
+			break
+		}
+		if len(nodes) == 0 {
+			log.Printf("%dページ目には活動が見つかりませんでした。", page)
+			consecutiveEmptyPages++
+			if consecutiveEmptyPages >= 3 {
+				log.Println("3回連続で活動のないページに到達したため、収集を終了します。")
+				break
+			}
+			page++
+			continue // 次のページへ
+		}
+
+		// 新しいURLが見つかったので、連続空ページカウンターをリセット
+		consecutiveEmptyPages = 0
 
 		initialCount := len(activityURLs)
 		for _, node := range nodes {
@@ -208,38 +241,19 @@ func processActivities(ctx context.Context, postCountToProcess int) ([]string, e
 				activityURLs = append(activityURLs, url)
 				log.Printf("投稿URLを発見: %s (現在 %d 件)", url, len(activityURLs))
 				if len(activityURLs) >= postCountToProcess {
-					goto collected
+					goto collected // 目標件数に達したので収集ループを抜ける
 				}
 			}
 		}
+
+		// このページで新しいURLが一つも見つからなかった場合
 		if len(activityURLs) == initialCount {
-			noNewContentCount++
-		} else {
-			noNewContentCount = 0
-		}
-
-		if noNewContentCount >= 5 {
-			log.Println("5回連続で新しい投稿が読み込まれませんでした。ページの終端と判断します。")
+			log.Println("このページでは新しいURLが見つかりませんでした。重複ページまたは最終ページと判断し、収集を終了します。")
 			break
 		}
 
-		var currentHeight int64
-		if err := chromedp.Run(ctx, chromedp.Evaluate(`document.body.scrollHeight`, &currentHeight)); err != nil {
-			log.Printf("ページの高さの取得に失敗: %v", err)
-			break
-		}
-		if currentHeight == lastHeight {
-			log.Println("ページの高さが変わりませんでした。ページの終端に到達した可能性があります。")
-			noNewContentCount++
-		}
-		lastHeight = currentHeight
-
-		log.Println("ページを下にスクロールします...")
-		if err := chromedp.Run(ctx, chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight)`, nil)); err != nil {
-			log.Printf("ページスクロールに失敗: %v", err)
-			break
-		}
-		time.Sleep(3 * time.Second) // 新しいコンテンツが読み込まれるのを待つ
+		page++
+		time.Sleep(2 * time.Second) // サーバーへの負荷を考慮した待機
 	}
 
 collected:
