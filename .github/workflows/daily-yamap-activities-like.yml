@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   schedule:
     # 日本時間の毎日12:00 (UTC 03:00) に実行
-    - cron: '0 3 * * *'
+    - cron: '0 0,3,6,9,12 * * *'
 
 jobs:
   trigger-jules-session:
