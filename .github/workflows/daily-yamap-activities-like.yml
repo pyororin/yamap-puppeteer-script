@@ -3,7 +3,7 @@ name: Daily YAMAP Activities Like
 on:
   workflow_dispatch:
   schedule:
-    # 日本時間の毎日12:00 (UTC 03:00) に実行
+    # 日本時間の毎日9時、12時、15時、18時、21時に実行
     - cron: '0 0,3,6,9,12 * * *'
 
 jobs:
