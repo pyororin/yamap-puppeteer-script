@@ -135,13 +135,13 @@ func runActivitiesReaction() {
 	log.Println("環境変数を読み込んでいます...")
 	email := os.Getenv("YAMAP_EMAIL")
 	password := os.Getenv("YAMAP_PASSWORD")
-	postCountStr := os.Getenv("POST_COUNT_TO_PROCESS")
+	postCountStr := os.Getenv("ACTIVITIES_POST_COUNT_TO_PROCESS")
 	if email == "" || password == "" || postCountStr == "" {
-		log.Fatal("環境変数 YAMAP_EMAIL, YAMAP_PASSWORD, POST_COUNT_TO_PROCESS を設定してください。")
+		log.Fatal("環境変数 YAMAP_EMAIL, YAMAP_PASSWORD, ACTIVITIES_POST_COUNT_TO_PROCESS を設定してください。")
 	}
 	postCount, err := strconv.Atoi(postCountStr)
 	if err != nil {
-		log.Fatalf("POST_COUNT_TO_PROCESSの値が不正です: %v", err)
+		log.Fatalf("ACTIVITIES_POST_COUNT_TO_PROCESSの値が不正です: %v", err)
 	}
 	log.Println("環境変数の読み込み完了。")
 
@@ -295,13 +295,13 @@ func runTimelineReaction() {
 	log.Println("環境変数を読み込んでいます...")
 	email := os.Getenv("YAMAP_EMAIL")
 	password := os.Getenv("YAMAP_PASSWORD")
-	postCountStr := os.Getenv("POST_COUNT_TO_PROCESS")
+	postCountStr := os.Getenv("TIMELINE_POST_COUNT_TO_PROCESS")
 	if email == "" || password == "" || postCountStr == "" {
-		log.Fatal("環境変数 YAMAP_EMAIL, YAMAP_PASSWORD, POST_COUNT_TO_PROCESS を設定してください。")
+		log.Fatal("環境変数 YAMAP_EMAIL, YAMAP_PASSWORD, TIMELINE_POST_COUNT_TO_PROCESS を設定してください。")
 	}
 	postCount, err := strconv.Atoi(postCountStr)
 	if err != nil {
-		log.Fatalf("POST_COUNT_TO_PROCESSの値が不正です: %v", err)
+		log.Fatalf("TIMELINE_POST_COUNT_TO_PROCESSの値が不正です: %v", err)
 	}
 	log.Println("環境変数の読み込み完了。")
 

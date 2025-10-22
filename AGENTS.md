@@ -19,9 +19,11 @@
     ```
     YAMAP_EMAIL="your_email@example.com"
     YAMAP_PASSWORD="your_password"
-    POST_COUNT_TO_PROCESS=50
+    TIMELINE_POST_COUNT_TO_PROCESS=50
+    ACTIVITIES_POST_COUNT_TO_PROCESS=30
     ```
-    `POST_COUNT_TO_PROCESS` は、「いいね！」を送信する活動記録の目標件数です。
+    `TIMELINE_POST_COUNT_TO_PROCESS` はタイムラインで「いいね！」を送信する活動記録の目標件数です。
+    `ACTIVITIES_POST_COUNT_TO_PROCESS` は活動一覧で「いいね！」を送信する活動記録の目標件数です。
 
 3.  **依存関係のインストール:**
     Go Modulesを使用して、必要なパッケージをインストール・整理します。
