@@ -534,8 +534,10 @@ func sendReaction(parentCtx context.Context, url string) (bool, error) {
 		return false, fmt.Errorf("投稿ページの基本読み込みに失敗: %w", err)
 	}
 
+	log.Println("リアクションボタンが表示されるまでスクロールします...")
 	if err := chromedp.Run(reactionCtx,
-		chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight);`, nil),
+		// ツールバーが表示領域に入るまでスクロール
+		chromedp.ScrollIntoView(`.ActivitiesId__ActivityToolBarContainer`),
 		chromedp.WaitVisible(`.emoji-add-button`, chromedp.ByQuery),
 	); err != nil {
 		log.Println("リアクションボタンの表示待機に失敗しました。")
