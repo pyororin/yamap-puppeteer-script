@@ -524,7 +524,7 @@ collected:
 }
 
 func sendReaction(parentCtx context.Context, url string) (bool, error) {
-	reactionCtx, cancel := context.WithTimeout(parentCtx, 20*time.Minute)
+	reactionCtx, cancel := context.WithTimeout(parentCtx, 90*time.Second)
 	defer cancel()
 
 	log.Printf("投稿ページに移動してリアクションを送信します: %s", url)
