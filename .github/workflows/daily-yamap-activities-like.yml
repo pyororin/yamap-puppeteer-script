@@ -15,7 +15,7 @@ jobs:
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
         run: |
           JSON_PAYLOAD=$(printf '{
-            "prompt": "AGENTS.mdの指示に従い、このリポジトリのSecretsに設定されているYAMAP_EMAILとYAMAP_PASSWORDを使用して `go run main.go -action react-activities` を実行し、YAMAPの活動一覧ページから投稿に自動で「いいね」をしてください。",
+            "prompt": "[YAMAP:アクティビティいいね] AGENTS.mdの指示に従い、このリポジトリのSecretsに設定されているYAMAP_EMAILとYAMAP_PASSWORDを使用して `go run main.go -action react-activities` を実行し、YAMAPの活動一覧ページから投稿に自動で「いいね」をしてください。",
             "sourceContext": {
               "source": "sources/github/%s",
               "githubRepoContext": {
