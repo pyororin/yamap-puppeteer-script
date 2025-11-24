@@ -4,34 +4,20 @@
 
 ## セットアップと実行方法
 
+
 1.  **リポジトリのクローン:**
     ```bash
     git clone <repository_url>
     cd <repository_directory>
     ```
 
-2.  **.envファイルの準備:**
-    `.env.example` ファイルをコピーして `.env` ファイルを作成し、ご自身のYAMAPアカウント情報を設定します。
-    ```bash
-    cp .env.example .env
-    ```
-    `.env` ファイルの中身:
-    ```
-    YAMAP_EMAIL="your_email@example.com"
-    YAMAP_PASSWORD="your_password"
-    TIMELINE_POST_COUNT_TO_PROCESS=50
-    ACTIVITIES_POST_COUNT_TO_PROCESS=30
-    ```
-    `TIMELINE_POST_COUNT_TO_PROCESS` はタイムラインで「いいね！」を送信する活動記録の目標件数です。
-    `ACTIVITIES_POST_COUNT_TO_PROCESS` は活動一覧で「いいね！」を送信する活動記録の目標件数です。
-
-3.  **依存関係のインストール:**
+2.  **依存関係のインストール:**
     Go Modulesを使用して、必要なパッケージをインストール・整理します。
     ```bash
     go mod tidy
     ```
 
-4.  **スクリプトの実行:**
+3.  **スクリプトの実行:**
     タイムラインへの「いいね！」機能を使うには、`-action react-timeline` フラグを付けてスクリプトを実行します。
     ```bash
     go run main.go -action react-timeline

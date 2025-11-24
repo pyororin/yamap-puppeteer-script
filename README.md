@@ -1,57 +1,62 @@
-# YAMAP Timeline Crawler in Go
+# YAMAP 自動いいねツール (YAMAP Auto Liker)
 
-This script uses Go and `chromedp` to automatically scroll through the YAMAP timeline and react to posts.
+Go言語と `chromedp` を使用して、YAMAPのタイムラインや活動記録を自動的に巡回し、未リアクションの投稿に「いいね！」（絵文字リアクション）を送信するツールです。
 
-## Features
+## 機能
 
-- Logs into YAMAP automatically.
-- Scrolls through the timeline to load a specified number of posts.
-- Automatically sends a reaction to posts that have not been reacted to yet.
-- Includes a debug mode to save the current page's HTML for easier selector analysis.
+- **自動ログイン:** YAMAPに自動でログインします。
+- **タイムライン巡回 (`react-timeline`):** フォローしているユーザーのタイムラインを巡回し、まだリアクションしていない投稿に「いいね！」します。
+- **活動記録一覧巡回 (`react-activities`):** 特定のユーザー（自分など）の活動記録一覧ページを巡回し、まだリアクシしていない投稿に「いいね！」します。
+- **ヘッドレスブラウザ実行:** Google Chrome (Chromium) をヘッドレスモードで操作するため、画面を表示せずにバックグラウンドで実行可能です。
 
-## Requirements
+## 必要要件
 
-- Go 1.18 or higher
+- Go 1.18 以上
+- Google Chrome または Chromium ブラウザ
 
-## Setup
+## セットアップ
 
-1.  **Install Go libraries:**
+1.  **リポジトリのクローン:**
     ```bash
-    go get github.com/chromedp/chromedp
-    go get github.com/joho/godotenv
+    git clone <repository_url>
+    cd <repository_directory>
     ```
 
-2.  **Create an environment file:**
-    Copy the `.env.example` file to a new file named `.env`.
+2.  **依存関係のインストール:**
     ```bash
-    cp .env.example .env
+    go mod tidy
     ```
 
-3.  **Set your credentials:**
-    Edit the `.env` file and fill in your YAMAP email and password.
+3.  **環境変数の設定:**
+    `.env` ファイルを作成し、以下の変数を設定します（Jules環境では自動設定される場合があります）。
+    ```
+    YAMAP_EMAIL="your_email@example.com"
+    YAMAP_PASSWORD="your_password"
+    TIMELINE_POST_COUNT_TO_PROCESS=50
+    ACTIVITIES_POST_COUNT_TO_PROCESS=30
+    ```
 
-## Usage
+## 使い方
 
-### Normal Execution
+### タイムラインへのいいね
 
-First, build the main program:
+フォローしているユーザーのタイムラインを巡回します。
+
 ```bash
-go build -o yamap-crawler index.go
+go run main.go -action react-timeline
 ```
 
-Then, run the compiled program:
+### 活動記録一覧へのいいね
+
+（主に自分の）活動記録一覧ページを巡回します。
+
 ```bash
-./yamap-crawler
+go run main.go -action react-activities
 ```
 
-### Debug Mode
+## アーキテクチャ
 
-First, build the debug program:
-```bash
-go build -o debug debug.go
-```
-Then, run it:
-```bash
-./debug
-```
-This will save the current HTML of the page to `debug_output.html`.
+このツールは **モノリシック・インメモリセッション方式** を採用しています。
+ログインからリアクション送信までの一連の処理を単一のプロセス内で完結させ、セッション情報（クッキー等）をメモリ上で保持することで、ファイル生成制限のある環境（サンドボックス等）でも安定して動作するように設計されています。
+
+詳細は `docs/specifications.md` を参照してください。
