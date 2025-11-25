@@ -15,7 +15,7 @@ jobs:
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
         run: |
           JSON_PAYLOAD=$(printf '{
-            "prompt": "[YAMAP:フォローのタイムラインへのいいね] AGENTS.mdの指示に従い、このリポジトリのSecretsに設定されているYAMAP_EMAILとYAMAP_PASSWORDを使用して `go run main.go -action react-timeline` を実行し、YAMAPのタイムライン投稿に自動で「いいね」をしてください。",
+            "prompt": "[YAMAP:フォローのタイムラインへのいいね] AGENTS.mdの指示に従い、このリポジトリのSecretsに設定されているYAMAP_EMAILとYAMAP_PASSWORDを使用して `go run main.go -action react-timeline` を実行し、YAMAPのタイムライン投稿に自動で「いいね」をしてください。Pushするファイルが無ければ、プルリクエストの作成は行わず、そのままセッションを終了してください。",
             "sourceContext": {
               "source": "sources/github/%s",
               "githubRepoContext": {
