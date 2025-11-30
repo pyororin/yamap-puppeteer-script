@@ -4,6 +4,7 @@
 
 ## セットアップと実行方法
 
+
 1.  **リポジトリのクローン:**
     ```bash
     git clone <repository_url>
@@ -28,7 +29,7 @@
     go mod tidy
     ```
 
-4.  **スクリプトの実行:**
+3.  **スクリプトの実行:**
     タイムラインへの「いいね！」機能を使うには、`-action react-timeline` フラグを付けてスクリプトを実行します。
     ```bash
     go run main.go -action react-timeline
