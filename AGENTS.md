@@ -11,10 +11,7 @@
     ```
 
 2.  **.envファイルの準備:**
-    `.env.example` ファイルをコピーして `.env` ファイルを作成し、ご自身のYAMAPアカウント情報を設定します。
-    ```bash
-    cp .env.example .env
-    ```
+    ルートディレクトリに `.env` ファイルが既に存在していることを確認してください。このファイルにはYAMAPのアカウント情報が設定されている必要があります。
     `.env` ファイルの中身:
     ```
     YAMAP_EMAIL="your_email@example.com"
