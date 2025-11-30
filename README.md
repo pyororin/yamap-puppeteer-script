@@ -21,16 +21,8 @@ This script uses Go and `chromedp` to automatically scroll through the YAMAP tim
     go get github.com/joho/godotenv
     ```
 
-2.  **Create an environment file:**
-    Copy the `.env.example` file to a new file named `.env`.
-    ```bash
-    cp .env.example .env
-    ```
-
-3.  **Set your credentials:**
-    Edit the `.env` file and fill in your YAMAP email and password.
-
-## Usage
+2.  **Environment Setup:**
+    Ensure that a `.env` file exists in the root directory. This file must contain your YAMAP credentials.
 
 ### Normal Execution
 
