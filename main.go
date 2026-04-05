@@ -80,7 +80,6 @@ func parseNuxtData(ctx context.Context) ([]FeedItem, error) {
 	return items, nil
 }
 
-
 func main() {
 	// コマンドライン引数の解析
 	action := flag.String("action", "", "実行するアクション (例: react-timeline)")
@@ -121,6 +120,7 @@ func runActivitiesReaction() {
 		chromedp.Headless,
 		chromedp.NoSandbox,
 		chromedp.DisableGPU,
+		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"),
 	)
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(allocatorCtx, allocOpts...)
 	defer cancelAlloc()
@@ -294,6 +294,7 @@ func runTimelineReaction() {
 		chromedp.Headless,
 		chromedp.NoSandbox,
 		chromedp.DisableGPU,
+		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"),
 	)
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(allocatorCtx, allocOpts...)
 	defer cancelAlloc()
@@ -351,9 +352,12 @@ func runTimelineReaction() {
 func login(ctx context.Context, email, password string, navigateToTimeline bool) error {
 	log.Println("ログインページに移動し、フォームを入力します...")
 	if err := chromedp.Run(ctx,
+		chromedp.EmulateViewport(1920, 1080),
 		chromedp.Navigate("https://yamap.com/login"),
 		chromedp.WaitVisible(`input[name="email"]`),
+		chromedp.Click(`input[name="email"]`),
 		chromedp.SendKeys(`input[name="email"]`, email),
+		chromedp.Click(`input[name="password"]`),
 		chromedp.SendKeys(`input[name="password"]`, password),
 	); err != nil {
 		return fmt.Errorf("フォーム入力に失敗: %w", err)
@@ -366,7 +370,7 @@ func login(ctx context.Context, email, password string, navigateToTimeline bool)
 	actions := []chromedp.Action{
 		chromedp.Evaluate(`document.querySelector('button[type="submit"]').click()`, nil),
 		// サーバーからの応答とリダイレクトを待つために少し待機
-		chromedp.Sleep(5 * time.Second),
+		chromedp.Sleep(10 * time.Second),
 	}
 
 	if navigateToTimeline {
