@@ -368,7 +368,7 @@ func login(ctx context.Context, email, password string, navigateToTimeline bool)
 	defer loginCancel()
 
 	actions := []chromedp.Action{
-		chromedp.Evaluate(`document.querySelector('button[type="submit"]').click()`, nil),
+		chromedp.Evaluate(`document.evaluate("//button[span[text()='ログイン']]", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue.click()`, nil),
 		// サーバーからの応答とリダイレクトを待つために少し待機
 		chromedp.Sleep(10 * time.Second),
 	}
