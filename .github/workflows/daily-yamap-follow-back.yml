@@ -1,0 +1,32 @@
+name: YAMAPのフォロワーのフォローバック
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 日本時間の毎日18:00 (UTC 09:00) に実行
+    - cron: '0 9 * * *'
+
+jobs:
+  trigger-jules-session:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Jules API to start YAMAP Follow-back session
+        env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+        run: |
+          JSON_PAYLOAD=$(printf '{
+            "prompt": "[YAMAP:フォロワーのフォローバック] AGENTS.mdの指示に従い、このリポジトリのSecretsに設定されているYAMAP_EMAILとYAMAP_PASSWORDを使用して `go run main.go -action follow-back` を実行し、YAMAPのフォロワーを自動でフォローバックしてください。Pushするファイルが無ければ、プルリクエストの作成は行わず、そのままセッションを終了してください。",
+            "sourceContext": {
+              "source": "sources/github/%s",
+              "githubRepoContext": {
+                "startingBranch": "main"
+              }
+            },
+            "title": "YAMAPのフォロワーのフォローバック"
+          }' "$GITHUB_REPOSITORY")
+
+          # APIを呼び出す
+          curl -f -X POST 'https://jules.googleapis.com/v1alpha/sessions' \
+          -H 'Content-Type: application/json' \
+          -H "X-Goog-Api-Key: $JULES_API_KEY" \
+          -d "$JSON_PAYLOAD"
