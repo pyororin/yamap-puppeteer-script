@@ -1,6 +1,6 @@
 # このエージェントについて
 
-このエージェントは、YAMAPのタイムライン上の活動記録に自動で「いいね！」（絵文字リアクション）を送信することを目的としています。
+このエージェントは、YAMAPのタイムライン上の活動記録に自動で「いいね！」（絵文字リアクション）を送信すること、およびフォロワーのフォローバックを自動で行うことを目的としています。
 
 ## セットアップと実行方法
 
@@ -17,8 +17,8 @@
     ```
     YAMAP_EMAIL="your_email@example.com"
     YAMAP_PASSWORD="your_password"
-    TIMELINE_POST_COUNT_TO_PROCESS=50
-    ACTIVITIES_POST_COUNT_TO_PROCESS=30
+    TIMELINE_POST_COUNT_TO_PROCESS=30
+    ACTIVITIES_POST_COUNT_TO_PROCESS=100
     ```
     `TIMELINE_POST_COUNT_TO_PROCESS` はタイムラインで「いいね！」を送信する活動記録の目標件数です。
     `ACTIVITIES_POST_COUNT_TO_PROCESS` は活動一覧で「いいね！」を送信する活動記録の目標件数です。
@@ -35,6 +35,15 @@
     go run main.go -action react-timeline
     ```
 
+    フォロワーのフォローバック機能を使うには、`-action follow-back` フラグを付けて実行します。
+    ```bash
+    go run main.go -action follow-back
+    ```
+    この機能は、ログイン中のユーザーのフォロワーページを自動で特定して巡回し、
+    「フォローされています」マークがあり且つ「フォローする」ボタンがあるユーザーを自動でフォローバックします。
+    ページネーションに対応しており、過去の全フォロワーを対象に処理を行います。
+    既に「フォロー中」になっているユーザーや、おすすめのユーザータブに表示されるユーザーはスキップします。
+
 ## エージェントへの指示
 
 -   **言語:** ユーザーへの返答、Gitのコミットメッセージなど、すべてのコミュニケーションは**日本語**で行ってください。
@@ -50,6 +59,8 @@
     -   ログインフォーム (`input[name="email"]`, `input[name="password"]`)
     -   タイムラインの活動記録 (`a[href^="/activities/"]`)
     -   絵文字リアクションボタン (`button[aria-label="絵文字をおくる"]`, `.emojiPickerBody`など)
+    -   フォロワーカード (`div[data-testid="user"]`)
+    -   ページネーション (`button[aria-label="次のページに移動する"]`)
 
     スクリプトが期待通りに動作しない場合、まずこれらのセレクタが最新のHTML構造と一致しているかを確認してください。**必要であれば、`main.go`にHTML構造を出力するような一時的なデバッグコードを追記して調査を行ってください。**
 

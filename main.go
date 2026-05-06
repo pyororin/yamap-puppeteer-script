@@ -96,13 +96,16 @@ func main() {
 	case "react-activities":
 		log.Println("アクション: react-activities を実行します。")
 		runActivitiesReaction()
+	case "follow-back":
+		log.Println("アクション: follow-back を実行します。")
+		runFollowBack()
 	case "":
 		log.Println("エラー: -actionフラグが指定されていません。実行するアクションを指定してください。")
-		log.Println("利用可能なアクション: react-timeline, react-activities")
+		log.Println("利用可能なアクション: react-timeline, react-activities, follow-back")
 		os.Exit(1)
 	default:
 		log.Printf("エラー: 不明なアクション '%s' が指定されました。\n", *action)
-		log.Println("利用可能なアクション: react-timeline, react-activities")
+		log.Println("利用可能なアクション: react-timeline, react-activities, follow-back")
 		os.Exit(1)
 	}
 }
@@ -595,6 +598,280 @@ func sendReaction(parentCtx context.Context, url string) (bool, error) {
 	}
 
 	return false, fmt.Errorf("リアクションの送信に失敗しました（3回試行）: %w", sendErr)
+}
+
+// runFollowBack はフォロワーのフォローバック処理全体を実行する
+func runFollowBack() {
+	log.Println("--- プログラム開始 (follow-back) ---")
+	startTime := time.Now()
+
+	log.Println("標準のchromedpを使用してヘッドレスブラウザを初期化しています...")
+	allocatorCtx, cancelAllocator := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancelAllocator()
+
+	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Headless,
+		chromedp.NoSandbox,
+		chromedp.DisableGPU,
+		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"),
+	)
+	allocCtx, cancelAlloc := chromedp.NewExecAllocator(allocatorCtx, allocOpts...)
+	defer cancelAlloc()
+
+	ctx, cancel := chromedp.NewContext(allocCtx, chromedp.WithLogf(log.Printf))
+	defer cancel()
+
+	ctx, cancel = context.WithTimeout(ctx, 25*time.Minute)
+	defer cancel()
+	log.Println("ブラウザの初期化完了。")
+
+	log.Println("環境変数を読み込んでいます...")
+	email := os.Getenv("YAMAP_EMAIL")
+	password := os.Getenv("YAMAP_PASSWORD")
+	if email == "" || password == "" {
+		log.Fatal("環境変数 YAMAP_EMAIL, YAMAP_PASSWORD を設定してください。")
+	}
+	log.Println("環境変数の読み込み完了。")
+
+	log.Println("ログイン処理を開始します...")
+	loginStartTime := time.Now()
+	if err := login(ctx, email, password, false); err != nil {
+		log.Fatalf("ログインに失敗しました: %v", err)
+	}
+	log.Printf("ログイン成功。処理時間: %s", time.Since(loginStartTime))
+
+	log.Println("フォロワーのフォローバック処理を開始します...")
+	followBackStartTime := time.Now()
+
+	// ログインしているユーザーのIDを自動取得
+	userID, err := getMyUserID(ctx)
+	if err != nil {
+		log.Printf("ユーザーIDの取得に失敗しました。デフォルトのIDを使用します: %v", err)
+		userID = "278948" // フォールバック
+	}
+	log.Printf("ログイン中のユーザーID: %s", userID)
+
+	followedUsers, err := processFollowBack(ctx, userID)
+	if err != nil {
+		log.Printf("フォローバック処理中にエラーが発生しました: %v", err)
+	}
+	log.Printf("フォローバック処理完了。処理時間: %s", time.Since(followBackStartTime))
+
+	if len(followedUsers) > 0 {
+		log.Println("\n--- フォローバックしたユーザー一覧 ---")
+		for _, user := range followedUsers {
+			log.Println(user)
+		}
+		log.Println("--------------------------------------")
+	} else {
+		log.Println("フォローバックが必要なユーザーはいませんでした。")
+	}
+
+	log.Printf("--- 全ての処理が正常に完了しました ---")
+	log.Printf("総処理時間: %s", time.Since(startTime))
+
+	printDependencies()
+}
+
+// processFollowBack はフォロワーページを巡回し、未フォローのフォロワーをフォローバックする
+func processFollowBack(ctx context.Context, userID string) ([]string, error) {
+	followersPageURL := fmt.Sprintf("https://yamap.com/users/%s?tab=followers#tabs", userID)
+	var followedUsers []string
+	pageNum := 1
+
+	log.Println("フォロワーページに移動します...")
+	if err := chromedp.Run(ctx,
+		chromedp.Navigate(followersPageURL),
+		chromedp.WaitVisible(`div[data-testid="user"]`, chromedp.ByQuery),
+		chromedp.Sleep(10*time.Second), // コンテンツの完全な描画を待機
+	); err != nil {
+		return nil, fmt.Errorf("フォロワーページへの移動に失敗しました: %w", err)
+	}
+	log.Println("フォロワーページの読み込み完了。")
+
+	// ページごとにフォローバック対象を処理するループ
+	for {
+		if ctx.Err() != nil {
+			log.Println("コンテキストがキャンセルされたため、処理を中断します。")
+			break
+		}
+
+		log.Printf("--- %dページ目のフォロワーを処理中 ---", pageNum)
+
+		// ページ内のフォローバック対象ユーザーのインデックスを取得する
+		// JavaScriptでDOM解析を行い、「フォローされています」テキストがあり、
+		// かつ「フォローする」ボタンがあるカードのインデックスを返す
+		var targetIndicesJSON string
+		err := chromedp.Run(ctx,
+			chromedp.Evaluate(`
+				(function() {
+					var cards = document.querySelectorAll('div[data-testid="user"]');
+					var targets = [];
+					for (var i = 0; i < cards.length; i++) {
+						var card = cards[i];
+						// デバッグ用にカードの全テキスト（innerText）を取得
+						var cardText = card.innerText;
+						var hasFollowedBy = cardText.includes('フォローされています');
+						
+						var followButton = null;
+						var buttons = card.querySelectorAll('button');
+						for (var j = 0; j < buttons.length; j++) {
+							var btnText = buttons[j].innerText.trim();
+							if (btnText === 'フォローする') {
+								followButton = buttons[j];
+								break;
+							}
+						}
+						
+						// デバッグ情報収集
+						var nameEl = card.querySelector('a[href^="/users/"]');
+						var userName = nameEl ? nameEl.innerText.trim() : '不明';
+						var userLink = nameEl ? nameEl.getAttribute('href') : '';
+						
+						if (hasFollowedBy && followButton) {
+							targets.push({index: i, name: userName, href: userLink});
+						}
+					}
+					return JSON.stringify(targets);
+				})()
+			`, &targetIndicesJSON),
+		)
+		if err != nil {
+			log.Printf("フォロワーカードの解析に失敗しました: %v", err)
+			break
+		}
+
+		// JSONパース
+		type FollowTarget struct {
+			Index int    `json:"index"`
+			Name  string `json:"name"`
+			Href  string `json:"href"`
+		}
+		var targets []FollowTarget
+		if err := json.Unmarshal([]byte(targetIndicesJSON), &targets); err != nil {
+			log.Printf("フォロワーターゲットのJSONパースに失敗しました: %v", err)
+			break
+		}
+
+		// デバッグ用に検出されたカードの総数も取得
+		var totalCards int
+		chromedp.Run(ctx, chromedp.Evaluate(`document.querySelectorAll('div[data-testid="user"]').length`, &totalCards))
+		log.Printf("%dページ目: 全%d件中、%d件のフォローバック対象を発見しました。", pageNum, totalCards, len(targets))
+
+		// 各対象ユーザーの「フォローする」ボタンをクリックする
+		// 注意: ボタンをクリックすると「フォロー中」に変わるため、インデックスは変わらないが
+		// DOMが更新されるので、毎回最新のDOMからボタンを探す
+		for _, target := range targets {
+			if ctx.Err() != nil {
+				log.Println("コンテキストがキャンセルされたため、処理を中断します。")
+				break
+			}
+
+			log.Printf("フォローバック中: %s (https://yamap.com%s)", target.Name, target.Href)
+
+			// JavaScriptで特定のカード内の「フォローする」ボタンをクリック
+			var clickResult bool
+			clickErr := chromedp.Run(ctx,
+				chromedp.Evaluate(fmt.Sprintf(`
+					(function() {
+						var cards = document.querySelectorAll('div[data-testid="user"]');
+						if (cards.length <= %d) return false;
+						var card = cards[%d];
+						var buttons = card.querySelectorAll('button');
+						for (var j = 0; j < buttons.length; j++) {
+							if (buttons[j].innerText.trim() === 'フォローする') {
+								buttons[j].click();
+								return true;
+							}
+						}
+						return false;
+					})()
+				`, target.Index, target.Index), &clickResult),
+				chromedp.Sleep(2*time.Second),
+			)
+
+			if clickErr != nil {
+				log.Printf("フォローボタンのクリックに失敗しました (%s): %v", target.Name, clickErr)
+				continue
+			}
+
+			if clickResult {
+				userURL := fmt.Sprintf("https://yamap.com%s", target.Href)
+				followedUsers = append(followedUsers, fmt.Sprintf("%s (%s)", target.Name, userURL))
+				log.Printf("フォローバック成功: %s (現在 %d 件)", target.Name, len(followedUsers))
+			} else {
+				log.Printf("フォローボタンが見つかりませんでした: %s", target.Name)
+			}
+
+			// 連続リクエストを避けるための待機
+			time.Sleep(1 * time.Second)
+		}
+
+		// 次のページへ進む
+		log.Println("次のページがあるか確認します...")
+		var hasNextPage bool
+		err = chromedp.Run(ctx,
+			chromedp.Evaluate(`
+				(function() {
+					var nextBtn = document.querySelector('button[aria-label="次のページに移動する"]');
+					return nextBtn !== null && !nextBtn.disabled;
+				})()
+			`, &hasNextPage),
+		)
+		if err != nil {
+			log.Printf("次のページボタンの確認に失敗しました: %v", err)
+			break
+		}
+
+		if !hasNextPage {
+			log.Println("最後のページに到達しました。フォローバック処理を終了します。")
+			break
+		}
+
+		// 次のページボタンをクリック
+		log.Println("次のページに移動します...")
+		err = chromedp.Run(ctx,
+			chromedp.Click(`button[aria-label="次のページに移動する"]`, chromedp.ByQuery),
+			chromedp.Sleep(3*time.Second),
+			chromedp.WaitVisible(`div[data-testid="user"]`, chromedp.ByQuery),
+		)
+		if err != nil {
+			log.Printf("次のページへの移動に失敗しました: %v", err)
+			break
+		}
+
+		pageNum++
+	}
+
+	log.Printf("フォローバック処理が完了しました。合計 %d 人をフォローバックしました。", len(followedUsers))
+	return followedUsers, nil
+}
+
+// getMyUserID はログイン後のセッションから現在のユーザーIDを取得します
+func getMyUserID(ctx context.Context) (string, error) {
+	var userID string
+	log.Println("ユーザーIDを取得するためにタイムラインに移動します...")
+	err := chromedp.Run(ctx,
+		chromedp.Navigate("https://yamap.com/timeline"),
+		chromedp.WaitVisible(`.TimelineList__Feed`, chromedp.ByQuery),
+		chromedp.Evaluate(`
+			(function() {
+				// ヘッダーのユーザーアイコン等のリンクからIDを抽出
+				var links = document.querySelectorAll('a[href^="/users/"]');
+				for (var i = 0; i < links.length; i++) {
+					var href = links[i].getAttribute('href');
+					var match = href.match(/^\/users\/(\d+)$/);
+					if (match) return match[1];
+				}
+				return null;
+			})()
+		`, &userID),
+	)
+	if err != nil || userID == "" {
+		return "", fmt.Errorf("タイムラインページからユーザーIDを取得できませんでした: %w", err)
+	}
+
+	return userID, nil
 }
 
 // printDependencies は go.mod ファイルを解析し、直接の依存関係を標準出力に表示します。
