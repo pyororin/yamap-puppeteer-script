@@ -367,8 +367,6 @@ func login(ctx context.Context, email, password string, navigateToTimeline bool)
 	}
 
 	log.Println("ログインボタンをクリックします...")
-	loginCtx, loginCancel := context.WithTimeout(ctx, 60*time.Second)
-	defer loginCancel()
 
 	actions := []chromedp.Action{
 		chromedp.Evaluate(`document.evaluate("//button[span[text()='ログイン']]", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue.click()`, nil),
@@ -390,7 +388,7 @@ func login(ctx context.Context, email, password string, navigateToTimeline bool)
 		)
 	}
 
-	if err := chromedp.Run(loginCtx, actions...); err != nil {
+	if err := chromedp.Run(ctx, actions...); err != nil {
 		log.Println("ログイン後のページ遷移または要素の表示確認に失敗しました。デバッグ情報を保存します...")
 		var buf []byte
 		var htmlContent string
