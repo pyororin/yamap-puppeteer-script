@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -381,10 +382,9 @@ func login(ctx context.Context, email, password string, navigateToTimeline bool)
 			chromedp.WaitVisible(`.TimelineList__Feed`, chromedp.ByQuery),
 		)
 	} else {
-		log.Println("ログイン成功を確認するため、マイページリンクの表示を待ちます...")
-		// ログイン後の汎用的な待機条件として、フッターが表示されるのを待つ
+		log.Println("ログイン成功を確認するため、少し待機します...")
 		actions = append(actions,
-			chromedp.WaitVisible(`footer[data-global-footer="true"]`, chromedp.ByQuery),
+			chromedp.Sleep(5*time.Second),
 		)
 	}
 
@@ -680,7 +680,7 @@ func processFollowBack(ctx context.Context, userID string) ([]string, error) {
 	log.Println("フォロワーページに移動します...")
 	if err := chromedp.Run(ctx,
 		chromedp.Navigate(followersPageURL),
-		chromedp.WaitVisible(`div[data-testid="user"]`, chromedp.ByQuery),
+		chromedp.Sleep(5*time.Second),  // Wait instead of WaitVisible for simplicity and robust
 		chromedp.Sleep(10*time.Second), // コンテンツの完全な描画を待機
 	); err != nil {
 		return nil, fmt.Errorf("フォロワーページへの移動に失敗しました: %w", err)
@@ -703,13 +703,10 @@ func processFollowBack(ctx context.Context, userID string) ([]string, error) {
 		err := chromedp.Run(ctx,
 			chromedp.Evaluate(`
 				(function() {
-					var cards = document.querySelectorAll('div[data-testid="user"]');
+					var cards = document.querySelectorAll('article');
 					var targets = [];
 					for (var i = 0; i < cards.length; i++) {
 						var card = cards[i];
-						// デバッグ用にカードの全テキスト（innerText）を取得
-						var cardText = card.innerText;
-						var hasFollowedBy = cardText.includes('フォローされています');
 						
 						var followButton = null;
 						var buttons = card.querySelectorAll('button');
@@ -726,7 +723,8 @@ func processFollowBack(ctx context.Context, userID string) ([]string, error) {
 						var userName = nameEl ? nameEl.innerText.trim() : '不明';
 						var userLink = nameEl ? nameEl.getAttribute('href') : '';
 						
-						if (hasFollowedBy && followButton) {
+						// As per instructions, anyone in the followers tab with a follow button is valid
+						if (followButton) {
 							targets.push({index: i, name: userName, href: userLink});
 						}
 					}
@@ -772,7 +770,7 @@ func processFollowBack(ctx context.Context, userID string) ([]string, error) {
 			clickErr := chromedp.Run(ctx,
 				chromedp.Evaluate(fmt.Sprintf(`
 					(function() {
-						var cards = document.querySelectorAll('div[data-testid="user"]');
+						var cards = document.querySelectorAll('article');
 						if (cards.length <= %d) return false;
 						var card = cards[%d];
 						var buttons = card.querySelectorAll('button');
@@ -830,8 +828,7 @@ func processFollowBack(ctx context.Context, userID string) ([]string, error) {
 		log.Println("次のページに移動します...")
 		err = chromedp.Run(ctx,
 			chromedp.Click(`button[aria-label="次のページに移動する"]`, chromedp.ByQuery),
-			chromedp.Sleep(3*time.Second),
-			chromedp.WaitVisible(`div[data-testid="user"]`, chromedp.ByQuery),
+			chromedp.Sleep(5*time.Second), // Sleep instead of WaitVisible for reliability
 		)
 		if err != nil {
 			log.Printf("次のページへの移動に失敗しました: %v", err)
@@ -848,13 +845,23 @@ func processFollowBack(ctx context.Context, userID string) ([]string, error) {
 // getMyUserID はログイン後のセッションから現在のユーザーIDを取得します
 func getMyUserID(ctx context.Context) (string, error) {
 	var userID string
-	log.Println("ユーザーIDを取得するためにタイムラインに移動します...")
+	log.Println("ユーザーIDを取得するためにマイページに移動します...")
+	var currentURL string
 	err := chromedp.Run(ctx,
-		chromedp.Navigate("https://yamap.com/timeline"),
-		chromedp.WaitVisible(`.TimelineList__Feed`, chromedp.ByQuery),
-		chromedp.Evaluate(`
+		chromedp.Navigate("https://yamap.com/mypage"),
+		chromedp.Sleep(5*time.Second),
+		chromedp.Location(&currentURL),
+	)
+	if err == nil {
+		// e.g. https://yamap.com/users/123456
+		if match := regexp.MustCompile(`.*/users/(\d+)`).FindStringSubmatch(currentURL); len(match) > 1 {
+			userID = match[1]
+		}
+	}
+	if userID == "" {
+		// As a fallback, try to parse from the menu or header links
+		_ = chromedp.Run(ctx, chromedp.Evaluate(`
 			(function() {
-				// ヘッダーのユーザーアイコン等のリンクからIDを抽出
 				var links = document.querySelectorAll('a[href^="/users/"]');
 				for (var i = 0; i < links.length; i++) {
 					var href = links[i].getAttribute('href');
@@ -863,10 +870,11 @@ func getMyUserID(ctx context.Context) (string, error) {
 				}
 				return null;
 			})()
-		`, &userID),
-	)
+		`, &userID))
+	}
+
 	if err != nil || userID == "" {
-		return "", fmt.Errorf("タイムラインページからユーザーIDを取得できませんでした: %w", err)
+		return "", fmt.Errorf("マイページからユーザーIDを取得できませんでした: %w (currentURL: %s)", err, currentURL)
 	}
 
 	return userID, nil
