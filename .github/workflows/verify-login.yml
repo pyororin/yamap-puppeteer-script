@@ -115,6 +115,52 @@ jobs:
           	_ = chromedp.Run(ctx, chromedp.Evaluate(`document.querySelectorAll('a[href^="/activities/"]').length`, &activityLinks))
           	log.Printf("a[href^=\"/activities/\"] の件数: %d", activityLinks)
 
+          	// Apollo キャッシュの構造を調べる（旧 window.__NUXT__.state.timeline.feeds の後継候補）
+          	var apolloTypes string
+          	_ = chromedp.Run(ctx, chromedp.Evaluate(`
+          		(function(){
+          		  try {
+          		    var c = window.__APOLLO_CLIENT__;
+          		    if (!c) return "__APOLLO_CLIENT__ が存在しない";
+          		    var data = c.cache.extract();
+          		    var counts = {};
+          		    Object.values(data).forEach(function(v){
+          		      if (v && v.__typename) counts[v.__typename] = (counts[v.__typename]||0)+1;
+          		    });
+          		    return Object.entries(counts).sort(function(a,b){return b[1]-a[1];})
+          		             .slice(0,25).map(function(e){return e[0]+"="+e[1];}).join(", ");
+          		  } catch(e){ return "例外: " + e.message; }
+          		})()`, &apolloTypes))
+          	log.Printf("Apolloキャッシュの型別件数: %s", apolloTypes)
+
+          	var activityKeys string
+          	_ = chromedp.Run(ctx, chromedp.Evaluate(`
+          		(function(){
+          		  try {
+          		    var data = window.__APOLLO_CLIENT__.cache.extract();
+          		    var k = Object.keys(data).filter(function(k){return /^Activity/i.test(k);});
+          		    if (!k.length) return "Activity で始まるキーなし。全キー例: " + Object.keys(data).slice(0,15).join(", ");
+          		    return "件数=" + k.length + " / 先頭キー=" + k[0] + " / フィールド=" + Object.keys(data[k[0]]).join(",");
+          		  } catch(e){ return "例外: " + e.message; }
+          		})()`, &activityKeys))
+          	log.Printf("Apollo Activity: %s", activityKeys)
+
+          	var reactionInfo string
+          	_ = chromedp.Run(ctx, chromedp.Evaluate(`
+          		(function(){
+          		  try {
+          		    var data = window.__APOLLO_CLIENT__.cache.extract();
+          		    var hit = Object.keys(data).filter(function(k){
+          		      var v = data[k];
+          		      return v && Object.keys(v).some(function(f){return /reaction|reacted|emoji/i.test(f);});
+          		    });
+          		    if (!hit.length) return "リアクション関連フィールドを持つエントリなし";
+          		    var v = data[hit[0]];
+          		    return "該当件数=" + hit.length + " / 例キー=" + hit[0] + " / フィールド=" + Object.keys(v).join(",");
+          		  } catch(e){ return "例外: " + e.message; }
+          		})()`, &reactionInfo))
+          	log.Printf("リアクション情報: %s", reactionInfo)
+
           	if strings.Contains(title, "認証に失敗") {
           		log.Fatal("NG: ログインに失敗しました。Secrets の値、または実行元IPのブロックを疑ってください。")
           	}
