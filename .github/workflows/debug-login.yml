@@ -87,6 +87,15 @@ jobs:
           		Array.from(document.querySelectorAll('[class*="rror"],[class*="lert"],[role="alert"]'))
           		     .map(e=>e.textContent.trim()).filter(Boolean).slice(0,5).join(" | ")`, &errText))
           	log.Printf("PAGE_ERROR_TEXT=%q", errText)
+          	var loginBody string
+          	_ = chromedp.Run(ctx, chromedp.Evaluate(`document.body.innerText.slice(0,1500)`, &loginBody))
+          	log.Printf("LOGIN_PAGE_TEXT=%s", strings.ReplaceAll(loginBody, "\n", " / "))
+          	var emailVal int
+          	_ = chromedp.Run(ctx, chromedp.Evaluate(`(document.querySelector(String.fromCharCode(105,110,112,117,116,91,110,97,109,101,61,34,101,109,97,105,108,34,93))||{}).value?.length||0`, &emailVal))
+          	log.Printf("EMAIL_FIELD_LEN=%d", emailVal)
+          	var pwVal int
+          	_ = chromedp.Run(ctx, chromedp.Evaluate(`(document.querySelector(String.fromCharCode(105,110,112,117,116,91,110,97,109,101,61,34,112,97,115,115,119,111,114,100,34,93))||{}).value?.length||0`, &pwVal))
+          	log.Printf("PASSWORD_FIELD_LEN=%d", pwVal)
 
           	// /timeline へ移動して本番が待っているセレクタの有無を見る
           	if err := chromedp.Run(ctx,
