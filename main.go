@@ -15,6 +15,7 @@ import (
 
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/chromedp"
+	kb "github.com/chromedp/chromedp/kb"
 	"github.com/joho/godotenv"
 )
 
@@ -84,8 +85,9 @@ func parseNuxtData(ctx context.Context) ([]FeedItem, error) {
 func main() {
 	// コマンドライン引数の解析
 	action := flag.String("action", "", "実行するアクション (例: react-timeline)")
+	targetURL := flag.String("url", "", "処理・調査する活動記録のURL (react-activities / debug-activity-page で使用)")
 	const availableActions = "利用可能なアクション: react-timeline, react-activities, follow-back, " +
-		"list-non-mutual, unfollow-non-mutual, debug-follow-buttons"
+		"list-non-mutual, unfollow-non-mutual, debug-follow-buttons, debug-activity-page"
 	flag.Parse()
 
 	if err := godotenv.Load(); err != nil {
@@ -98,7 +100,7 @@ func main() {
 		runTimelineReaction()
 	case "react-activities":
 		log.Println("アクション: react-activities を実行します。")
-		runActivitiesReaction()
+		runActivitiesReaction(*targetURL)
 	case "follow-back":
 		log.Println("アクション: follow-back を実行します。")
 		runFollowBack()
@@ -111,6 +113,9 @@ func main() {
 	case "debug-follow-buttons":
 		log.Println("アクション: debug-follow-buttons を実行します。")
 		runDebugFollowButtons()
+	case "debug-activity-page":
+		log.Println("アクション: debug-activity-page を実行します。")
+		runDebugActivityPage(*targetURL)
 	case "":
 		log.Println("エラー: -actionフラグが指定されていません。実行するアクションを指定してください。")
 		log.Println(availableActions)
@@ -123,7 +128,7 @@ func main() {
 }
 
 // runActivitiesReaction は活動一覧ページへのリアクション処理全体を実行する
-func runActivitiesReaction() {
+func runActivitiesReaction(singleURL string) {
 	log.Println("--- プログラム開始 (react-activities) ---")
 	startTime := time.Now()
 
@@ -173,7 +178,18 @@ func runActivitiesReaction() {
 
 	log.Println("活動一覧ページの処理を開始します...")
 	activitiesStartTime := time.Now()
-	reactedURLs, err := processActivities(ctx, postCount)
+	var reactedURLs []string
+	if singleURL != "" {
+		// -url 指定時はその1件だけを処理する（動作確認・デバッグ用）
+		log.Printf("-url が指定されたため、1件のみ処理します: %s", singleURL)
+		if ok, sErr := sendReaction(ctx, singleURL); sErr != nil {
+			log.Printf("リアクション処理でエラーが発生しました (%s): %v", singleURL, sErr)
+		} else if ok {
+			reactedURLs = append(reactedURLs, singleURL)
+		}
+	} else {
+		reactedURLs, err = processActivities(ctx, postCount)
+	}
 	if err != nil {
 		log.Printf("活動一覧ページの処理中にエラーが発生しました: %v", err)
 	}
@@ -545,52 +561,121 @@ collected:
 	return reactedURLs, nil
 }
 
+// リアクション関連のセレクタ。
+// YAMAPのフロントエンドがNuxtからNext.jsへ刷新され、
+// CSSクラス名がEmotionのハッシュ（css-xxxxxx）になったため、
+// クラス名ではなく aria-label を手がかりにする。
+const (
+	// 投稿ページのリアクション追加ボタン
+	reactionOpenButton = `button[aria-label="絵文字をおくる"]`
+	// リアクション数を表示するリンク。aria-labelは「絵文字をおくった人（N件の絵文字）」
+	reactionCountLink = `a[aria-label^="絵文字をおくった人"]`
+	// 送信する絵文字。ピッカー内の並び順ではなく aria-label で指定する
+	reactionEmojiLabel = "thumbs up"
+)
+
+// readReactionCount は投稿に付いているリアクション数を読み取る。
+// 取得できない場合は -1 を返す。
+func readReactionCount(ctx context.Context) int {
+	var count int
+	script := `
+		(function() {
+			var a = document.querySelector('a[aria-label^="絵文字をおくった人"]');
+			if (!a) return -1;
+			var m = (a.getAttribute('aria-label') || '').match(/（(\d+)件/);
+			if (m) return parseInt(m[1], 10);
+			var t = (a.innerText || '').match(/(\d+)/);
+			return t ? parseInt(t[1], 10) : -1;
+		})()
+	`
+	if err := chromedp.Run(ctx, chromedp.Evaluate(script, &count)); err != nil {
+		return -1
+	}
+	return count
+}
+
+// viewerHasReacted は自分が既にこの投稿へリアクション済みかを返す。
+// リアクション済みの絵文字には class="emoji-button viewer-has-reacted" が付き、
+// aria-label が「<絵文字名> 削除する」に変わる。
+//
+// この印は絵文字ピッカーを開いて初めて描画されるため、
+// 必ずピッカーを開いた状態で呼ぶこと。
+func viewerHasReacted(ctx context.Context) (bool, error) {
+	var reacted bool
+	if err := chromedp.Run(ctx, chromedp.Evaluate(
+		`!!document.querySelector('.viewer-has-reacted')`, &reacted)); err != nil {
+		return false, fmt.Errorf("リアクション済み判定の評価に失敗: %w", err)
+	}
+	return reacted, nil
+}
+
+// sendReaction は投稿ページを開き、絵文字リアクションを送信する。
 func sendReaction(parentCtx context.Context, url string) (bool, error) {
 	reactionCtx, cancel := context.WithTimeout(parentCtx, 90*time.Second)
 	defer cancel()
 
 	log.Printf("投稿ページに移動してリアクションを送信します: %s", url)
 
-	if err := chromedp.Run(reactionCtx, chromedp.Navigate(url), chromedp.WaitVisible(`.FooterNav`, chromedp.ByQuery)); err != nil {
+	// リアクションボタンの出現をもって「ページが使える状態」と判断する
+	if err := chromedp.Run(reactionCtx,
+		chromedp.Navigate(url),
+		chromedp.WaitVisible(reactionOpenButton, chromedp.ByQuery),
+	); err != nil {
 		log.Println("リアクションページの基本読み込みに失敗しました。")
 		return false, fmt.Errorf("投稿ページの基本読み込みに失敗: %w", err)
 	}
 
-	log.Println("リアクションボタンが表示されるまでスクロールします...")
-	if err := chromedp.Run(reactionCtx,
-		// ツールバーが表示領域に入るまでスクロール
-		chromedp.ScrollIntoView(`.ActivitiesId__ActivityToolBarContainer`),
-		chromedp.WaitVisible(`.emoji-add-button`, chromedp.ByQuery),
-	); err != nil {
-		log.Println("リアクションボタンの表示待機に失敗しました。")
-		return false, fmt.Errorf("リアクションボタンの表示待機に失敗: %w", err)
-	}
+	before := readReactionCount(reactionCtx)
+	log.Printf("送信前のリアクション数: %d", before)
+
+	emojiSelector := fmt.Sprintf(`[role="dialog"] button[aria-label=%s]`, quoteJS(reactionEmojiLabel))
 
 	var sendErr error
 	for i := 0; i < 3; i++ {
 		log.Printf("リアクション試行 %d回目: %s", i+1, url)
 
+		// ピッカーを開く
 		if err := chromedp.Run(reactionCtx,
-			chromedp.Click(`.emoji-add-button`, chromedp.ByQuery),
-			chromedp.WaitVisible(`.emojiPickerBody`),
-			chromedp.Sleep(2*time.Second),
+			chromedp.ScrollIntoView(reactionOpenButton, chromedp.ByQuery),
+			chromedp.Sleep(1*time.Second),
+			chromedp.Click(reactionOpenButton, chromedp.ByQuery),
+			chromedp.WaitVisible(`[role="dialog"]`, chromedp.ByQuery),
+			chromedp.Sleep(1*time.Second),
 		); err != nil {
 			log.Printf("絵文字ピッカーの表示に失敗: %v", err)
 			sendErr = err
 			continue
 		}
 
-		// 以前はリアクション済みの絵文字をクリックしようとしていたが、
-		// 0件の場合はピッカーから選択する必要があるためロジックを修正。
-		// ピッカー内の最初の絵文字ボタンをクリックする。
-		log.Println("絵文字ピッカーから最初の絵文字を選択してクリックします。")
+		// 既に自分がリアクション済みなら触らない。
+		// 同じ絵文字を再度クリックするとトグルで解除されてしまう。
+		// この印はピッカーを開いて初めて描画されるため、ここで判定する。
+		if reacted, err := viewerHasReacted(reactionCtx); err != nil {
+			log.Printf("リアクション済み判定に失敗しました。処理を継続します: %v", err)
+		} else if reacted {
+			log.Printf("既にリアクション済みのためスキップします: %s", url)
+			// ピッカーを閉じてから抜ける
+			_ = chromedp.Run(reactionCtx, chromedp.KeyEvent(kb.Escape), chromedp.Sleep(1*time.Second))
+			return false, nil
+		}
+
+		// 絵文字を選択する
+		log.Printf("絵文字 %q を選択します。", reactionEmojiLabel)
 		sendErr = chromedp.Run(reactionCtx,
-			// ユーザーのフィードバックに基づき、リアクションの有無両方のパターンに対応
-			chromedp.Click(`.emojiButton.emoji-button:first-child, .emoji-picker-button:first-child`, chromedp.ByQuery),
-			chromedp.Sleep(3*time.Second), // Wait for the reaction to be sent
+			chromedp.Click(emojiSelector, chromedp.ByQuery),
+			chromedp.Sleep(3*time.Second),
 		)
 
 		if sendErr == nil {
+			// リアクション数が増えたかで送信成功を検証する。
+			// 既に同じ絵文字を送っていた場合はトグルで解除され数が減るため、
+			// 増加を確認できなければ失敗として扱う。
+			after := readReactionCount(reactionCtx)
+			log.Printf("送信後のリアクション数: %d", after)
+			if before >= 0 && after >= 0 && after <= before {
+				log.Printf("リアクション数が増えていません（%d→%d）。既にリアクション済みの可能性があります: %s", before, after, url)
+				return false, nil
+			}
 			log.Printf("リアクションの送信に成功しました: %s", url)
 			return true, nil
 		}
@@ -604,7 +689,10 @@ func sendReaction(parentCtx context.Context, url string) (bool, error) {
 
 		if i < 2 {
 			log.Println("ページをリロードして再試行します...")
-			if err := chromedp.Run(reactionCtx, chromedp.Reload(), chromedp.WaitVisible(`.emoji-add-button`)); err != nil {
+			if err := chromedp.Run(reactionCtx,
+				chromedp.Reload(),
+				chromedp.WaitVisible(reactionOpenButton, chromedp.ByQuery),
+			); err != nil {
 				log.Printf("リロードに失敗: %v", err)
 				return false, fmt.Errorf("リロード後のボタン待機に失敗: %w", err)
 			}

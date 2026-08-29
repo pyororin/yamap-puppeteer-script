@@ -37,4 +37,4 @@ jobs:
           YAMAP_EMAIL: ${{ secrets.YAMAP_EMAIL }}
           YAMAP_PASSWORD: ${{ secrets.YAMAP_PASSWORD }}
           TIMELINE_POST_COUNT_TO_PROCESS: '30'
-        run: go run main.go -action react-timeline
+        run: go run . -action react-timeline
