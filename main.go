@@ -355,7 +355,9 @@ func login(ctx context.Context, email, password string, navigateToTimeline bool)
 		log.Println("明示的にタイムラインへ移動します...")
 		actions = append(actions,
 			chromedp.Navigate("https://yamap.com/timeline"),
-			chromedp.WaitVisible(`.TimelineList__Feed`, chromedp.ByQuery),
+			// 旧 .TimelineList__Feed は YAMAP の Next.js 刷新で消滅した。
+			// 活動記録へのリンクの出現をもってタイムラインの描画完了と判断する。
+			chromedp.WaitVisible(timelineActivityLink, chromedp.ByQuery),
 		)
 	} else {
 		log.Println("ログイン成功を確認するため、少し待機します...")
@@ -364,7 +366,12 @@ func login(ctx context.Context, email, password string, navigateToTimeline bool)
 		)
 	}
 
-	if err := chromedp.Run(ctx, actions...); err != nil {
+	// セレクタが失効していると WaitVisible が延々と待ち続け、
+	// ジョブのタイムアウトまで無駄に走り続けてしまうため上限を設ける。
+	postLoginCtx, cancelPostLogin := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancelPostLogin()
+
+	if err := chromedp.Run(postLoginCtx, actions...); err != nil {
 		log.Println("ログイン後のページ遷移または要素の表示確認に失敗しました。デバッグ情報を保存します...")
 		var buf []byte
 		var htmlContent string
