@@ -25,63 +25,6 @@ type ActivityInfo struct {
 	Reacted bool
 }
 
-// Activity represents the activity data within a feed item.
-type Activity struct {
-	ID             int64 `json:"id"`
-	EmojiReactions []struct {
-		ViewerHasReacted bool `json:"viewer_has_reacted"`
-	} `json:"emoji_reactions"`
-}
-
-// Journal represents a journal entry within a feed item.
-// It's kept minimal as we only need it for parsing.
-type Journal struct {
-	ID   int64  `json:"id"`
-	Text string `json:"text"`
-}
-
-// FeedItem represents a single item in the timeline feed.
-// It includes fields for both activities and journals to ensure proper JSON parsing.
-type FeedItem struct {
-	ID           int64     `json:"id"`
-	FeedableType string    `json:"feedable_type"`
-	Activity     *Activity `json:"activity"`
-	Journal      *Journal  `json:"journal"`
-}
-
-// parseNuxtData extracts and parses the timeline feed data from the page's javascript context.
-func parseNuxtData(ctx context.Context) ([]FeedItem, error) {
-	var res json.RawMessage
-	// タイムラインのフィードは window.__NUXT__.state.timeline.feeds に格納されている
-	// オブジェクトを直接返し、chromedpにJSONへのシリアライズを任せる
-	script := `
-		(function() {
-			if (window.__NUXT__ && window.__NUXT__.state && window.__NUXT__.state.timeline && window.__NUXT__.state.timeline.feeds) {
-				return window.__NUXT__.state.timeline.feeds;
-			}
-			return null;
-		})();
-	`
-	err := chromedp.Run(ctx,
-		chromedp.Evaluate(script, &res),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to evaluate javascript to get feed items: %w", err)
-	}
-
-	if len(res) == 0 || string(res) == "null" {
-		return []FeedItem{}, nil
-	}
-
-	var items []FeedItem
-	if err := json.Unmarshal(res, &items); err != nil {
-		os.WriteFile("failed_unmarshal_feeds.json", res, 0644)
-		return nil, fmt.Errorf("failed to unmarshal feed items from javascript object: %w. JSON saved to failed_unmarshal_feeds.json", err)
-	}
-
-	return items, nil
-}
-
 func main() {
 	// コマンドライン引数の解析
 	action := flag.String("action", "", "実行するアクション (例: react-timeline)")
@@ -451,12 +394,23 @@ func login(ctx context.Context, email, password string, navigateToTimeline bool)
 }
 
 func processTimeline(ctx context.Context, postCountToProcess int) ([]string, error) {
-	log.Println("タイムライン上の未リアクションの投稿URLを収集します...")
+	log.Println("タイムライン上の投稿URLを収集します...")
 
 	var activitiesToProcess []ActivityInfo
-	seenActivityIDs := make(map[int64]struct{})
+	seenURLs := make(map[string]struct{})
 	var lastHeight int64
 	noNewContentCount := 0
+
+	// YAMAPのフロントエンド刷新により window.__NUXT__ は存在しなくなったため、
+	// タイムラインのDOMから活動記録へのリンクを直接集める。
+	// リアクション済みかどうかはここでは判定できないが、
+	// sendReaction 側でピッカーを開いた時点で判定しスキップする。
+	if err := chromedp.Run(ctx,
+		chromedp.Navigate("https://yamap.com/timeline"),
+		chromedp.WaitVisible(timelineActivityLink, chromedp.ByQuery),
+	); err != nil {
+		return nil, fmt.Errorf("タイムラインの読み込みに失敗: %w", err)
+	}
 
 	for len(activitiesToProcess) < postCountToProcess {
 		select {
@@ -466,42 +420,29 @@ func processTimeline(ctx context.Context, postCountToProcess int) ([]string, err
 		default:
 		}
 
-		if err := chromedp.Run(ctx,
-			chromedp.WaitVisible(`.TimelineList__Feed`, chromedp.ByQuery),
-			chromedp.Poll(`window.__NUXT__ && window.__NUXT__.state && window.__NUXT__.state.timeline && window.__NUXT__.state.timeline.feeds`, nil, chromedp.WithPollingTimeout(20*time.Second)),
-		); err != nil {
-			log.Printf("タイムラインデータの準備待機中にエラーが発生しました: %v", err)
-			break // ループを抜けて収集したURLの処理に移る
-		}
-
-		feedItems, err := parseNuxtData(ctx)
-		if err != nil {
-			log.Printf("NUXTデータのパースに失敗: %v", err)
+		var hrefs []string
+		if err := chromedp.Run(ctx, chromedp.Evaluate(`
+			Array.from(new Set(
+				Array.from(document.querySelectorAll('a[href^="/activities/"]'))
+					.map(function(a){ return (a.getAttribute('href') || '').split('?')[0]; })
+					.filter(function(h){ return /^\/activities\/\d+$/.test(h); })
+			))
+		`, &hrefs)); err != nil {
+			log.Printf("投稿リンクの収集に失敗しました: %v", err)
 			break
 		}
 
 		initialCount := len(activitiesToProcess)
-		for _, item := range feedItems {
-			if item.Activity == nil || item.Activity.ID == 0 {
+		for _, h := range hrefs {
+			url := "https://yamap.com" + h
+			if _, seen := seenURLs[url]; seen {
 				continue
 			}
-			if _, seen := seenActivityIDs[item.Activity.ID]; !seen {
-				seenActivityIDs[item.Activity.ID] = struct{}{}
-				hasReacted := false
-				for _, reaction := range item.Activity.EmojiReactions {
-					if reaction.ViewerHasReacted {
-						hasReacted = true
-						break
-					}
-				}
-				if !hasReacted {
-					url := fmt.Sprintf("https://yamap.com/activities/%d", item.Activity.ID)
-					activitiesToProcess = append(activitiesToProcess, ActivityInfo{URL: url})
-					log.Printf("未リアクションの投稿を発見: %s (現在 %d 件)", url, len(activitiesToProcess))
-					if len(activitiesToProcess) >= postCountToProcess {
-						goto collected
-					}
-				}
+			seenURLs[url] = struct{}{}
+			activitiesToProcess = append(activitiesToProcess, ActivityInfo{URL: url})
+			log.Printf("投稿を発見: %s (現在 %d 件)", url, len(activitiesToProcess))
+			if len(activitiesToProcess) >= postCountToProcess {
+				goto collected
 			}
 		}
 
@@ -536,7 +477,7 @@ func processTimeline(ctx context.Context, postCountToProcess int) ([]string, err
 	}
 
 collected:
-	log.Printf("%d件の未リアクション投稿を収集しました。リアクション処理を開始します。", len(activitiesToProcess))
+	log.Printf("%d件の投稿を収集しました。リアクション処理を開始します。", len(activitiesToProcess))
 
 	var reactedURLs []string
 	for i, activity := range activitiesToProcess {
@@ -572,6 +513,8 @@ const (
 	reactionCountLink = `a[aria-label^="絵文字をおくった人"]`
 	// 送信する絵文字。ピッカー内の並び順ではなく aria-label で指定する
 	reactionEmojiLabel = "thumbs up"
+	// タイムライン上の活動記録へのリンク
+	timelineActivityLink = `a[href^="/activities/"]`
 )
 
 // readReactionCount は投稿に付いているリアクション数を読み取る。
