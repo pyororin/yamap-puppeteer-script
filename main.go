@@ -84,6 +84,8 @@ func parseNuxtData(ctx context.Context) ([]FeedItem, error) {
 func main() {
 	// コマンドライン引数の解析
 	action := flag.String("action", "", "実行するアクション (例: react-timeline)")
+	const availableActions = "利用可能なアクション: react-timeline, react-activities, follow-back, " +
+		"list-non-mutual, unfollow-non-mutual, debug-follow-buttons"
 	flag.Parse()
 
 	if err := godotenv.Load(); err != nil {
@@ -100,13 +102,22 @@ func main() {
 	case "follow-back":
 		log.Println("アクション: follow-back を実行します。")
 		runFollowBack()
+	case "list-non-mutual":
+		log.Println("アクション: list-non-mutual を実行します。")
+		runListNonMutual()
+	case "unfollow-non-mutual":
+		log.Println("アクション: unfollow-non-mutual を実行します。")
+		runUnfollowNonMutual()
+	case "debug-follow-buttons":
+		log.Println("アクション: debug-follow-buttons を実行します。")
+		runDebugFollowButtons()
 	case "":
 		log.Println("エラー: -actionフラグが指定されていません。実行するアクションを指定してください。")
-		log.Println("利用可能なアクション: react-timeline, react-activities, follow-back")
+		log.Println(availableActions)
 		os.Exit(1)
 	default:
 		log.Printf("エラー: 不明なアクション '%s' が指定されました。\n", *action)
-		log.Println("利用可能なアクション: react-timeline, react-activities, follow-back")
+		log.Println(availableActions)
 		os.Exit(1)
 	}
 }
