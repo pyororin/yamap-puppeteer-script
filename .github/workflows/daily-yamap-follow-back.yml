@@ -2,9 +2,10 @@ name: YAMAPのフォロワーのフォローバック
 
 on:
   workflow_dispatch:
-  schedule:
-    # 日本時間の毎日18:00 (UTC 09:00) に実行
-    - cron: '0 9 * * *'
+  # Claudeのスケジュールタスク（ローカル実行）へ移行したため無効化。手動実行は workflow_dispatch から可能。
+  # schedule:
+  #   # 日本時間の毎日18:00 (UTC 09:00) に実行
+  #   - cron: '0 9 * * *'
 
 jobs:
   trigger-jules-session:

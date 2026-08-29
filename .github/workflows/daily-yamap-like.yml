@@ -2,9 +2,10 @@ name: YAMAPのフォローのタイムラインへのいいね
 
 on:
   workflow_dispatch:
-  schedule:
-    # 日本時間の毎日12:00 (UTC 03:00) に実行
-    - cron: '0 3 * * *'
+  # Claudeのスケジュールタスク（ローカル実行）へ移行したため無効化。手動実行は workflow_dispatch から可能。
+  # schedule:
+  #   # 日本時間の毎日12:00 (UTC 03:00) に実行
+  #   - cron: '0 3 * * *'
 
 jobs:
   trigger-jules-session:
