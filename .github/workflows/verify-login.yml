@@ -87,6 +87,34 @@ jobs:
           	log.Printf("到達先: url=%s title=%s", url, title)
           	log.Printf(".TimelineList__Feed の有無: %v", hasFeed)
 
+          	// データ取得経路が生きているかの確認
+          	var nuxtType string
+          	_ = chromedp.Run(ctx, chromedp.Evaluate(`typeof window.__NUXT__`, &nuxtType))
+          	log.Printf("typeof window.__NUXT__ = %s", nuxtType)
+
+          	var nuxtFeeds string
+          	_ = chromedp.Run(ctx, chromedp.Evaluate(`
+          		(function(){
+          		  try {
+          		    var n = window.__NUXT__;
+          		    if (!n) return "window.__NUXT__ が存在しない";
+          		    var keys = Object.keys(n).slice(0,15).join(",");
+          		    var st = n.state ? Object.keys(n.state).slice(0,25).join(",") : "(state なし)";
+          		    var f = (n.state && n.state.timeline && n.state.timeline.feeds) ? ("feeds件数=" + n.state.timeline.feeds.length) : "state.timeline.feeds なし";
+          		    return "__NUXT__のキー[" + keys + "] / stateのキー[" + st + "] / " + f;
+          		  } catch(e) { return "例外: " + e.message; }
+          		})()`, &nuxtFeeds))
+          	log.Printf("NUXTデータ: %s", nuxtFeeds)
+
+          	var otherState string
+          	_ = chromedp.Run(ctx, chromedp.Evaluate(`
+          		Object.keys(window).filter(k=>/^__(NUXT|NEXT|APOLLO|INITIAL)/i.test(k)).join(", ") || "(該当なし)"`, &otherState))
+          	log.Printf("グローバルの状態オブジェクト: %s", otherState)
+
+          	var activityLinks int
+          	_ = chromedp.Run(ctx, chromedp.Evaluate(`document.querySelectorAll('a[href^="/activities/"]').length`, &activityLinks))
+          	log.Printf("a[href^=\"/activities/\"] の件数: %d", activityLinks)
+
           	if strings.Contains(title, "認証に失敗") {
           		log.Fatal("NG: ログインに失敗しました。Secrets の値、または実行元IPのブロックを疑ってください。")
           	}
