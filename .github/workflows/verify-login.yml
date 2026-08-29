@@ -1,0 +1,102 @@
+name: ログイン疎通確認
+
+# Secrets の再登録後や、YAMAP 側の仕様変更を疑うときに手動で実行する軽量チェック。
+# 本番ワークフローは失敗時に長時間ハングするため、まずこちらで疎通を確かめる。
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Chrome をウォームアップ
+        run: |
+          google-chrome --version
+          time timeout 120 google-chrome --headless=new --no-sandbox --disable-gpu --dump-dom 'data:text/html,warmup' > /dev/null
+
+      - name: ログインできるか確認
+        env:
+          YAMAP_EMAIL: ${{ secrets.YAMAP_EMAIL }}
+          YAMAP_PASSWORD: ${{ secrets.YAMAP_PASSWORD }}
+        run: |
+          mkdir -p /tmp/verify && cd /tmp/verify
+          cat > main.go <<'GO'
+          package main
+
+          import (
+          	"context"
+          	"log"
+          	"os"
+          	"strings"
+          	"time"
+
+          	"github.com/chromedp/chromedp"
+          )
+
+          func main() {
+          	email, password := os.Getenv("YAMAP_EMAIL"), os.Getenv("YAMAP_PASSWORD")
+          	if email == "" || password == "" {
+          		log.Fatal("NG: YAMAP_EMAIL / YAMAP_PASSWORD が未設定です")
+          	}
+          	log.Printf("入力値の長さ: email=%d文字 password=%d文字", len([]rune(email)), len([]rune(password)))
+
+          	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+          		chromedp.Headless, chromedp.NoSandbox, chromedp.DisableGPU,
+          		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"),
+          	)
+          	ac, c1 := chromedp.NewExecAllocator(context.Background(), opts...)
+          	defer c1()
+          	ctx, c2 := chromedp.NewContext(ac)
+          	defer c2()
+          	ctx, c3 := context.WithTimeout(ctx, 5*time.Minute)
+          	defer c3()
+
+          	if err := chromedp.Run(ctx,
+          		chromedp.EmulateViewport(1920, 1080),
+          		chromedp.Navigate("https://yamap.com/login"),
+          		chromedp.WaitVisible(`input[name="email"]`),
+          		chromedp.Click(`input[name="email"]`),
+          		chromedp.SendKeys(`input[name="email"]`, email),
+          		chromedp.Click(`input[name="password"]`),
+          		chromedp.SendKeys(`input[name="password"]`, password),
+          		chromedp.Evaluate(`document.evaluate("//button[span[text()='ログイン']]", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue.click()`, nil),
+          		chromedp.Sleep(15*time.Second),
+          		chromedp.Navigate("https://yamap.com/timeline"),
+          		chromedp.Sleep(15*time.Second),
+          	); err != nil {
+          		log.Fatalf("NG: 操作に失敗しました: %v", err)
+          	}
+
+          	var url, title string
+          	var hasFeed bool
+          	if err := chromedp.Run(ctx,
+          		chromedp.Location(&url),
+          		chromedp.Title(&title),
+          		chromedp.Evaluate(`!!document.querySelector('.TimelineList__Feed')`, &hasFeed),
+          	); err != nil {
+          		log.Fatalf("NG: 状態取得に失敗しました: %v", err)
+          	}
+          	log.Printf("到達先: url=%s title=%s", url, title)
+          	log.Printf(".TimelineList__Feed の有無: %v", hasFeed)
+
+          	if strings.Contains(title, "認証に失敗") {
+          		log.Fatal("NG: ログインに失敗しました。Secrets の値、または実行元IPのブロックを疑ってください。")
+          	}
+          	if !hasFeed {
+          		var body string
+          		_ = chromedp.Run(ctx, chromedp.Evaluate(`document.body.innerText.slice(0,300)`, &body))
+          		log.Printf("ページ本文の冒頭: %s", strings.ReplaceAll(body, "\n", " / "))
+          		log.Fatal("NG: ログインは通ったがタイムラインのセレクタ .TimelineList__Feed が見つかりません。YAMAP側のHTML構造変更を疑ってください。")
+          	}
+          	log.Println("OK: ログインに成功し、タイムラインを取得できました。")
+          }
+          GO
+          go mod init verify
+          go get github.com/chromedp/chromedp@v0.14.1
+          go run main.go 2>&1 | grep -vE '"method"|<- \{|-> \{'
