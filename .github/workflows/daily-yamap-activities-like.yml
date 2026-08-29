@@ -2,6 +2,15 @@ name: YAMAPのユーザーの活動記録へのいいね
 
 on:
   workflow_dispatch:
+    inputs:
+      count:
+        description: '処理する投稿件数（動作確認時は小さくする）'
+        required: false
+        default: '100'
+      url:
+        description: '特定の活動記録URLのみ処理する（動作確認用。指定時は count を無視）'
+        required: false
+        default: ''
   schedule:
     # 日本時間の毎日9時、12時、15時、18時、21時に実行
     - cron: '0 0,3,6,9,12 * * *'
@@ -36,5 +45,12 @@ jobs:
         env:
           YAMAP_EMAIL: ${{ secrets.YAMAP_EMAIL }}
           YAMAP_PASSWORD: ${{ secrets.YAMAP_PASSWORD }}
-          ACTIVITIES_POST_COUNT_TO_PROCESS: '100'
-        run: go run main.go -action react-activities
+          ACTIVITIES_POST_COUNT_TO_PROCESS: ${{ inputs.count || '100' }}
+          # 入力値は run: に直接展開せず、環境変数経由で渡す（スクリプトインジェクション対策）
+          TARGET_URL: ${{ inputs.url }}
+        run: |
+          if [ -n "$TARGET_URL" ]; then
+            go run . -action react-activities -url "$TARGET_URL"
+          else
+            go run . -action react-activities
+          fi

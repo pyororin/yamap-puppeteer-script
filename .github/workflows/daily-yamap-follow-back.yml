@@ -36,4 +36,4 @@ jobs:
         env:
           YAMAP_EMAIL: ${{ secrets.YAMAP_EMAIL }}
           YAMAP_PASSWORD: ${{ secrets.YAMAP_PASSWORD }}
-        run: go run main.go -action follow-back
+        run: go run . -action follow-back
