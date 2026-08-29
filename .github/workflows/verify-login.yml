@@ -48,6 +48,8 @@ jobs:
 
           	opts := append(chromedp.DefaultExecAllocatorOptions[:],
           		chromedp.Headless, chromedp.NoSandbox, chromedp.DisableGPU,
+          		// CI ランナーでは Chrome の起動が既定の20秒を超えることがあるため延長する
+          		chromedp.WSURLReadTimeout(90*time.Second),
           		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"),
           	)
           	ac, c1 := chromedp.NewExecAllocator(context.Background(), opts...)
