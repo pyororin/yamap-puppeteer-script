@@ -25,8 +25,12 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Chrome の存在を確認
-        run: google-chrome --version
+      # chromedp の WSURLReadTimeout は既定20秒。ランナー初回の Chrome 起動が
+      # これを超えると 'websocket url timeout reached' で失敗するため、事前に一度起動して温めておく。
+      - name: Chrome をウォームアップ
+        run: |
+          google-chrome --version
+          time timeout 120 google-chrome --headless=new --no-sandbox --disable-gpu --dump-dom 'data:text/html,warmup' > /dev/null
 
       - name: 活動一覧ページへの「いいね」を実行
         env:
