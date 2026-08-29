@@ -6,27 +6,31 @@ on:
     # 日本時間の毎日9時、12時、15時、18時、21時に実行
     - cron: '0 0,3,6,9,12 * * *'
 
-jobs:
-  trigger-jules-session:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Trigger Jules API to start YAMAP Activities Like session
-        env:
-          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
-        run: |
-          JSON_PAYLOAD=$(printf '{
-            "prompt": "[YAMAP:ユーザー活動記録へのいいね] AGENTS.mdの指示に従い、このリポジトリのSecretsに設定されているYAMAP_EMAILとYAMAP_PASSWORDを使用して `go run main.go -action react-activities` を実行し、YAMAPの活動一覧ページから投稿に自動で「いいね」をしてください。Pushするファイルが無ければ、プルリクエストの作成は行わず、そのままセッションを終了してください。",
-            "sourceContext": {
-              "source": "sources/github/%s",
-              "githubRepoContext": {
-                "startingBranch": "main"
-              }
-            },
-            "title": "YAMAPのユーザーの活動記録へのいいね"
-          }' "$GITHUB_REPOSITORY")
+# 同じワークフローの多重実行を防ぐ（前回実行が長引いた場合は新規実行をスキップ）
+concurrency:
+  group: yamap-react-activities
+  cancel-in-progress: false
 
-          # APIを呼び出す
-          curl -f -X POST 'https://jules.googleapis.com/v1alpha/sessions' \
-          -H 'Content-Type: application/json' \
-          -H "X-Goog-Api-Key: $JULES_API_KEY" \
-          -d "$JSON_PAYLOAD"
+jobs:
+  react-activities:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Go をセットアップ
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Chrome の存在を確認
+        run: google-chrome --version
+
+      - name: 活動一覧ページへの「いいね」を実行
+        env:
+          YAMAP_EMAIL: ${{ secrets.YAMAP_EMAIL }}
+          YAMAP_PASSWORD: ${{ secrets.YAMAP_PASSWORD }}
+          ACTIVITIES_POST_COUNT_TO_PROCESS: '100'
+        run: go run main.go -action react-activities

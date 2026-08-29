@@ -6,27 +6,30 @@ on:
     # 日本時間の毎日18:00 (UTC 09:00) に実行
     - cron: '0 9 * * *'
 
-jobs:
-  trigger-jules-session:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Trigger Jules API to start YAMAP Follow-back session
-        env:
-          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
-        run: |
-          JSON_PAYLOAD=$(printf '{
-            "prompt": "[YAMAP:フォロワーのフォローバック] AGENTS.mdの指示に従い、このリポジトリのSecretsに設定されているYAMAP_EMAILとYAMAP_PASSWORDを使用して `go run main.go -action follow-back` を実行し、YAMAPのフォロワーを自動でフォローバックしてください。Pushするファイルが無ければ、プルリクエストの作成は行わず、そのままセッションを終了してください。",
-            "sourceContext": {
-              "source": "sources/github/%s",
-              "githubRepoContext": {
-                "startingBranch": "main"
-              }
-            },
-            "title": "YAMAPのフォロワーのフォローバック"
-          }' "$GITHUB_REPOSITORY")
+# 同じワークフローの多重実行を防ぐ（前回実行が長引いた場合は新規実行をスキップ）
+concurrency:
+  group: yamap-follow-back
+  cancel-in-progress: false
 
-          # APIを呼び出す
-          curl -f -X POST 'https://jules.googleapis.com/v1alpha/sessions' \
-          -H 'Content-Type: application/json' \
-          -H "X-Goog-Api-Key: $JULES_API_KEY" \
-          -d "$JSON_PAYLOAD"
+jobs:
+  follow-back:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Go をセットアップ
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Chrome の存在を確認
+        run: google-chrome --version
+
+      - name: フォローバックを実行
+        env:
+          YAMAP_EMAIL: ${{ secrets.YAMAP_EMAIL }}
+          YAMAP_PASSWORD: ${{ secrets.YAMAP_PASSWORD }}
+        run: go run main.go -action follow-back
