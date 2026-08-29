@@ -89,6 +89,24 @@ jobs:
           		log.Fatal("NG: ログインに失敗しました。Secrets の値、または実行元IPのブロックを疑ってください。")
           	}
           	if !hasFeed {
+          		// セレクタ変更の手がかりを出す
+          		var classes string
+          		_ = chromedp.Run(ctx, chromedp.Evaluate(`
+          			Array.from(new Set(Array.from(document.querySelectorAll('[class]'))
+          			     .flatMap(e=>Array.from(e.classList))
+          			     .filter(c=>/Timeline|Feed|Activity|Article|List|Card|Post/i.test(c)))).slice(0,60).join(", ")`, &classes))
+          		log.Printf("候補クラス名: %s", classes)
+
+          		var testids string
+          		_ = chromedp.Run(ctx, chromedp.Evaluate(`
+          			Array.from(new Set(Array.from(document.querySelectorAll('[data-testid]'))
+          			     .map(e=>e.getAttribute('data-testid')))).slice(0,40).join(", ")`, &testids))
+          		log.Printf("data-testid 一覧: %s", testids)
+
+          		var activityLinks int
+          		_ = chromedp.Run(ctx, chromedp.Evaluate(`document.querySelectorAll('a[href^="/activities/"]').length`, &activityLinks))
+          		log.Printf("a[href^=\"/activities/\"] の件数: %d", activityLinks)
+
           		var body string
           		_ = chromedp.Run(ctx, chromedp.Evaluate(`document.body.innerText.slice(0,300)`, &body))
           		log.Printf("ページ本文の冒頭: %s", strings.ReplaceAll(body, "\n", " / "))
