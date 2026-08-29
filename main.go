@@ -707,7 +707,9 @@ func processFollowBack(ctx context.Context, userID string) ([]string, error) {
 					var targets = [];
 					for (var i = 0; i < cards.length; i++) {
 						var card = cards[i];
-						
+						var cardText = card.innerText;
+						var hasFollowedBy = cardText.includes('フォローされています');
+
 						var followButton = null;
 						var buttons = card.querySelectorAll('button');
 						for (var j = 0; j < buttons.length; j++) {
@@ -717,14 +719,14 @@ func processFollowBack(ctx context.Context, userID string) ([]string, error) {
 								break;
 							}
 						}
-						
+
 						// デバッグ情報収集
 						var nameEl = card.querySelector('a[href^="/users/"]');
 						var userName = nameEl ? nameEl.innerText.trim() : '不明';
 						var userLink = nameEl ? nameEl.getAttribute('href') : '';
-						
-						// As per instructions, anyone in the followers tab with a follow button is valid
-						if (followButton) {
+
+						// 「フォローされています」マークがあり、かつ「フォローする」ボタンがある場合のみ対象にする
+						if (hasFollowedBy && followButton) {
 							targets.push({index: i, name: userName, href: userLink});
 						}
 					}
