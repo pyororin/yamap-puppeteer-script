@@ -124,6 +124,9 @@ func runActivitiesReaction() {
 		chromedp.Headless,
 		chromedp.NoSandbox,
 		chromedp.DisableGPU,
+		// CI環境ではChromeの起動が既定の20秒を超えて
+		// "websocket url timeout reached" で失敗することがあるため延長する
+		chromedp.WSURLReadTimeout(90*time.Second),
 		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"),
 	)
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(allocatorCtx, allocOpts...)
@@ -298,6 +301,9 @@ func runTimelineReaction() {
 		chromedp.Headless,
 		chromedp.NoSandbox,
 		chromedp.DisableGPU,
+		// CI環境ではChromeの起動が既定の20秒を超えて
+		// "websocket url timeout reached" で失敗することがあるため延長する
+		chromedp.WSURLReadTimeout(90*time.Second),
 		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"),
 	)
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(allocatorCtx, allocOpts...)
@@ -611,6 +617,9 @@ func runFollowBack() {
 		chromedp.Headless,
 		chromedp.NoSandbox,
 		chromedp.DisableGPU,
+		// CI環境ではChromeの起動が既定の20秒を超えて
+		// "websocket url timeout reached" で失敗することがあるため延長する
+		chromedp.WSURLReadTimeout(90*time.Second),
 		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"),
 	)
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(allocatorCtx, allocOpts...)
